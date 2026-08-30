@@ -1,0 +1,81 @@
+<launch>
+    <!-- C:1'43 -->
+    <!-- mission_type: NULL, drop, blink -->
+    <arg name="mission_type" default="blink" />
+    <arg name="fly_height" default="0.8" />
+
+    <arg name="hover_low_height" default="0.4" />
+    <arg name="mission_interval" default="4" />
+    <!-- 0: use 2D Nav Goal to select goal  -->
+    <!-- 1: use waypoints -->
+    <arg name="flight_type" default="1" />
+    <!-- true: inset fasle: change -->
+    <arg name="is_insert_waypoint" default="false" />
+    <arg name="pub_delay" default="0" />
+    <arg name="is_auto_land" default="true" />
+
+    <arg name="detect_timeout" default="10" />
+    <arg name="target_area_offset_z" default="-0.5" />
+
+    <!-- move_base -->
+    <include file="$(find navigation_2d)/launch/move_base.launch">
+    </include>
+
+    <node pkg="navigation_2d" type="navigation_with_waypoint_node" name="navigation_with_waypoint_node" output="screen">
+
+        <param name="fly_height" value="$(arg fly_height)" />
+        <param name="hover_low_height" value="$(arg hover_low_height)" />
+        <param name="target_area_offset_z" value="$(arg target_area_offset_z)" />
+        <param name="mission_interval" value="$(arg mission_interval)" />
+
+        <param name="input_URI" value="v4l2:///dev/video0" />
+        <param name="path" value="$(find navigation_2d)/detect_mode/letter_abc" />
+        <param name="pub_rate" value="15" />
+        <param name="object_width" value="0.3" />
+        <param name="object_height" value="0.4" />
+        <param name="confidence_threshold" value="0.85" />
+        <param name="detect_times" value="20" />
+
+        <!-- 0: use 2D Nav Goal to select goal  -->
+        <!-- 1: use waypoints below  -->
+        <param name="flight_type" value="$(arg flight_type)" />
+
+        <!-- If flight_type is set to 1, following params will work -->
+        <param name="pub_delay" value="$(arg pub_delay)" />
+        <!-- true: inset fasle: change -->
+        <param name="is_insert_waypoint" value="false" />
+        <param name="is_auto_land" value="true" />
+        <param name="mission_type" value="$(arg mission_type)" />
+
+        <!-- waypoints -->
+        <!-- If flight_type is set to 1, the drone will travel these waypoints one by one -->
+        <param name="point_num" value="6" />
+        <param name="detect_waypoint_id" value="2" />
+
+        <param name="point0_x" value="1" />
+        <param name="point0_y" value="0.5" />
+
+        <param name="point1_x" value="3.6" />
+        <param name="point1_y" value="0" />
+
+        <param name="point2_x" value="3.6" />
+        <param name="point2_y" value="3" />
+
+        <param name="point3_x" value="1.5" />
+        <param name="point3_y" value="3" />
+
+        <param name="point4_x" value="3" />
+        <param name="point4_y" value="0.9" />
+
+        <param name="point5_x" value="0" />
+        <param name="point5_y" value="0" />
+
+    
+    </node>
+
+    <!-- <node pkg="navigation_2d" type="detectnet" name="detectnet"/> -->
+
+    <node name="rqt_image_view" pkg="rqt_image_view" type="rqt_image_view" output="screen"/>
+
+
+</launch>

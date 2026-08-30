@@ -1,0 +1,47 @@
+<launch>
+    <arg name="input_URI" default="v4l2:///dev/video0" />
+    <arg name="confidence_threshold" default="0.85" />
+    <arg name="detect_times" default="20" />
+    
+    <!-- 启动摄像头识别二维码的节点 -->
+    <node pkg="your_package" type="drop_mode_node.py" name="drop_mode_node" output="screen">
+        <param name="input_URI" value="$(arg input_URI)" />
+        <param name="confidence_threshold" value="$(arg confidence_threshold)" />
+        <param name="detect_times" value="$(arg detect_times)" />
+    </node>
+    
+    <!-- 启动导航节点 -->
+    <node pkg="navigation_2d" type="navigation_with_waypoint_node" name="navigation_with_waypoint_node" output="screen">
+        <param name="mission_type" value="drop" />
+        <param name="fly_height" value="0.95" />
+        <param name="hover_low_height" value="0.5" />
+        <param name="mission_interval" value="4" />
+        <param name="flight_type" value="1" />
+        <param name="is_insert_waypoint" value="false" />
+        <param name="pub_delay" value="0" />
+        <param name="is_auto_land" value="true" />
+        <param name="detect_timeout" value="20" />
+        <param name="target_area_offset_z" value="-0.5" />
+        
+        <!-- 设置航点 -->
+        <param name="point_num" value="4" />
+        <param name="detect_waypoint_id" value="3" />
+        
+        <param name="point0_x" value="2.40" />
+        <param name="point0_y" value="0.50" />
+        <param name="point0_height" value="1.0" />
+        
+        <param name="point1_x" value="4.70" />
+        <param name="point1_y" value="0.10" />
+        <param name="point1_height" value="1.2" />
+        
+        <param name="point2_x" value="4.70" />
+        <param name="point2_y" value="2.10" />
+        <param name="point2_height" value="1.5" />
+        
+        <param name="point3_x" value="7.35" />
+        <param name="point3_y" value="2.10" />
+        <param name="point3_height" value="1.8" />
+    </node>
+</launch>
+

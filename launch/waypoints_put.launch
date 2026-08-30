@@ -1,0 +1,49 @@
+<launch>
+    <arg name="fly_height" default="0.8" />
+    <arg name="flight_type" default="1" />
+    <arg name="pub_delay" default="0" />
+    <arg name="is_auto_land" default="true" />
+    <arg name="goal_tolerance" default="0.3" />
+    <arg name="hovertimes" default="3" />
+    <arg name="putpoint1" default="6" />
+    <arg name="putpoint2" default="8" />
+    <arg name="putpoint3" default="9" />
+
+    <node pkg="as_navigation" type="waypoints_put_node" name="waypoints_put_node" output="screen">
+        <param name="fly_height" value="$(arg fly_height)" />
+        <!-- <param name="hover_low_height" value="$(arg hover_low_height)" />
+        <param name="shot_height" value="$(arg shot_height)" />
+        <param name="target_area_offset_z" value="$(arg target_area_offset_z)" /> -->
+        <!-- <param name="mission_interval" value="$(arg mission_interval)" /> -->
+        <param name="hovertimes" value="$(arg hovertimes)" />
+        <param name="pub_rate" value="15" />
+        <param name="flight_type" value="$(arg flight_type)" />
+        <param name="pub_delay" value="$(arg pub_delay)" />
+
+        <param name="goal_tolerance" value="$(arg goal_tolerance)" />
+        <param name="putpoint1" value="$(arg putpoint1)" />
+        <param name="putpoint2" value="$(arg putpoint2)" />
+        <param name="putpoint3" value="$(arg putpoint3)" />
+
+        <param name="detect_times" value="40" />
+
+        <param name="is_auto_land" value="$(arg is_auto_land)" />
+
+        <!-- <param name="is_insert_waypoint" value="$(arg is_insert_waypoint)" /> -->
+        <param name="point_num" value="2" />
+
+        <!-- <param name="hover_waypoint" value="$(arg hover_waypoint)" />
+        <param name="descend_waypoint" value="$(arg descend_waypoint)" /> -->
+
+        <param name="point0_x" value="1" />
+        <param name="point0_y" value="1" />
+
+        <param name="point1_x" value="2" />
+        <param name="point1_y" value="2" />
+
+    </node>
+    
+<include file="$(find as_navigation)/launch/move_base.launch">
+    </include>
+
+</launch>

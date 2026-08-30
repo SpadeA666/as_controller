@@ -1,0 +1,9 @@
+*.bak*
+*.pyc
+build/
+devel/
+log/
+.vscode/
+*.so
+*复件*
+*无偏移*

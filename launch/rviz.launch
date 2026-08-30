@@ -1,0 +1,7 @@
+<launch>
+<arg name="open_rviz" default="true" />
+
+    <group if="$(arg open_rviz)">
+        <node pkg="rviz" type="rviz" name="rviz" required="true" args="-d $(find as_navigation)/rviz/ego.rviz" />
+    </group>
+</launch>
