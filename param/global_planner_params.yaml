@@ -1,7 +1,0 @@
-GlobalPlanner:
-
-  allow_unknown: true      # 不允许穿过未知区域
-  use_dijkstra: false        # 使用 Dijkstra (比 A* 更稳健)
-  use_grid_path: true      # 设为 false 得到平滑曲线，设为 true 得到直线/折线
-  visualize_potential: true # 在 Rviz 中查看势场图，方便调试
-  old_navfn_behavior: false # 禁用老版本行为
