@@ -19,8 +19,6 @@
 #include <move_base_msgs/MoveBaseAction.h> 
 #include <actionlib/client/simple_action_client.h> 
 
-#include "lib_library.h"
-
 typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseClient;
 
 class ASNAV
@@ -36,7 +34,7 @@ class ASNAV
     bool flyDown(float descend_z);
     bool flyUp(float height);
     void setpointPublish();
-    void set_mode(string mode);
+    void set_mode(std::string mode);
     bool autoLand();
     bool trackYoloDown(float max_distance = 0.35f, int tol = 30);
     bool trackYoloForward(float Kp_x, float Kp_y, float Kp_z, float target_box_height, int tol_xy, int tol_size);
@@ -45,11 +43,11 @@ class ASNAV
     bool interceptBalloon( float charge_speed, float Kp_y, float Kp_z, float pop_box_height);
     bool escapeBackward(float distance, float tol);
     bool attackBalloon(float charge_speed);
-    bool dropBallon(int pwm_5 = 100, int pwm_6 = 100);
+    bool pwmControl(int pwm_channel_5, int pwm_channel_6, int pwm_channel_7 = 0);
 
     struct yoloBox
     {
-        string Class;
+        std::string Class;
         float cameraXCenter, cameraYCenter;
         float boxHeight;
     };

@@ -15,17 +15,8 @@ ASNAV::ASNAV(ros::NodeHandle& nh) : nh_(nh)
     nh_private.param<float>("fly_height", fly_height, 0.5f);
     nh_private.param<float>("descend_z", descend_z, 0.3f);
 
-    // navigationZpro 速度环PI修正参数
-    nh_private.param<float>("zpro_kp", zpro_kp_, 2.5f);
-    nh_private.param<float>("zpro_ki", zpro_ki_, 0.3f);
-    nh_private.param<float>("zpro_max_v", zpro_max_v_, 2.0f);
-    nh_private.param<float>("zpro_integral_clamp", zpro_integral_clamp_, 0.5f);
-    nh_private.param<float>("zpro_err_thresh", zpro_err_thresh_, 0.5f);
-    nh_private.param<float>("zpro_brake_dist", zpro_brake_dist_, 1.2f);
-    nh_private.param<float>("zpro_brake_min_v", zpro_brake_min_v_, 0.15f);
-    nh_private.param<float>("zpro_accel_ff_gain", zpro_accel_ff_gain_, 0.5f);
 
-    // navigationZplus 参数加载
+    // navigationEgo 参数加载
     nh_private.param<float>("zplus_kp_outer", zplus_kp_outer_, 2.5f);
     nh_private.param<float>("zplus_kv_outer", zplus_kv_outer_, 0.8f);
     nh_private.param<float>("zplus_ki_outer", zplus_ki_outer_, 0.3f);
@@ -164,7 +155,7 @@ bool ASNAV::takeoff(float height)
             is_offboard = false;
         }
      }
-    if (std::fabs(current_position.z - height) < 0.1f)
+    if (std::fabs(current_position.z - height) < 0.25f)
     {
         ROS_INFO("已达到目标高度: %.2f m", height);
         return true;
@@ -284,8 +275,12 @@ bool ASNAV::positionSmooth(float target_x, float target_y, float target_z, float
         target_position.position.y = virtual_sp.y;
         target_position.position.z = virtual_sp.z;
     } else {
-        // 悬停制动阶段，发死最终目标点
-        target_position.type_mask = mavros_msgs::PositionTarget::IGNORE_AFX |
+        // 悬停制动阶段，发死最终目标点（纯位置保持，与 navigationSuper 锁存一致：
+        // 只发位置、忽略速度字段，避免"位置+零速度"双约束与 PX4 位置环打架导致收敛慢/晃动）
+        target_position.type_mask = mavros_msgs::PositionTarget::IGNORE_VX |
+                                    mavros_msgs::PositionTarget::IGNORE_VY |
+                                    mavros_msgs::PositionTarget::IGNORE_VZ |
+                                    mavros_msgs::PositionTarget::IGNORE_AFX |
                                     mavros_msgs::PositionTarget::IGNORE_AFY |
                                     mavros_msgs::PositionTarget::IGNORE_AFZ |
                                     mavros_msgs::PositionTarget::FORCE |
@@ -404,169 +399,8 @@ bool ASNAV::navigationWithPosition(float x, float y, float z, float yaw, float t
     }
     return false;
 }
-// 导航pro改进版(位置外环 + 速度前馈 + Yaw覆盖 + ego停摆容错)正在测试中！！！！！！！！！
-bool ASNAV::navigationZpro(float x, float y, float z, float yaw, float tol)
-{
-    if (!goal_sent_)
-    {
-        geometry_msgs::PoseStamped goal;
-        goal.header.stamp = ros::Time::now();
-        goal.header.frame_id = "map";
-        goal.pose.position.x = x;
-        goal.pose.position.y = y;
-        goal.pose.position.z = z;
-        goal.pose.orientation = tf::createQuaternionMsgFromYaw(yaw);
-        goal_pub_.publish(goal);
-
-        goal_sent_ = true;
-        // 新任务：清零积分
-        integral_err_zx_ = 0.0f;
-        integral_err_zy_ = 0.0f;
-        ROS_INFO("[Zpro] 新目标 (%.2f, %.2f, %.2f) | Kp=%.2f Ki=%.2f maxV=%.2f brake=%.1fm",
-                 x, y, z, zpro_kp_, zpro_ki_, zpro_max_v_, zpro_brake_dist_);
-    }
-
-    if (ego_cmd_received_)
-    {
-        target_position.header.stamp = ros::Time::now();
-        target_position.coordinate_frame = mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
-
-        // ---------- 掩码 ----------
-        // XY: 速度模式，Z: 位置模式
-        // 加速度前馈始终开启（通过增益控制实际大小，gain=0 等效于关闭）
-        target_position.type_mask =
-            mavros_msgs::PositionTarget::IGNORE_PX |
-            mavros_msgs::PositionTarget::IGNORE_PY |
-            mavros_msgs::PositionTarget::IGNORE_VZ |
-            mavros_msgs::PositionTarget::IGNORE_AFZ |        // Z 不用加速度
-            mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
-
-        // ---------- 位置误差 ----------
-        float err_x = ego_cmd_.position.x - current_position.x;
-        float err_y = ego_cmd_.position.y - current_position.y;
-
-        // ---------- 积分（仅在小误差时生效，防过冲）----------
-        if (std::abs(err_x) < zpro_err_thresh_)
-            integral_err_zx_ += err_x * 0.01f;          // dt ≈ 100Hz
-        else
-            integral_err_zx_ *= 0.95f;                   // 大误差时缓慢泄积分
-
-        if (std::abs(err_y) < zpro_err_thresh_)
-            integral_err_zy_ += err_y * 0.01f;
-        else
-            integral_err_zy_ *= 0.95f;
-
-        integral_err_zx_ = std::clamp(integral_err_zx_, -zpro_integral_clamp_, zpro_integral_clamp_);
-        integral_err_zy_ = std::clamp(integral_err_zy_, -zpro_integral_clamp_, zpro_integral_clamp_);
-
-        // ---------- 速度指令 = 前馈 + P修正 + I修正 ----------
-        float pi_corr_x = zpro_kp_ * err_x + zpro_ki_ * integral_err_zx_;
-        float pi_corr_y = zpro_kp_ * err_y + zpro_ki_ * integral_err_zy_;
-        float vx_ref = ego_cmd_.velocity.x;
-        float vy_ref = ego_cmd_.velocity.y;
-
-        // PI 修正不得反向抵消前馈超过 80%：飞机不能停，必须跟着B样条走
-        float max_oppose_x = 0.8f * std::abs(vx_ref);
-        float max_oppose_y = 0.8f * std::abs(vy_ref);
-        if (vx_ref > 0.01f && pi_corr_x < -max_oppose_x) pi_corr_x = -max_oppose_x;
-        if (vx_ref < -0.01f && pi_corr_x > max_oppose_x) pi_corr_x = max_oppose_x;
-        if (vy_ref > 0.01f && pi_corr_y < -max_oppose_y) pi_corr_y = -max_oppose_y;
-        if (vy_ref < -0.01f && pi_corr_y > max_oppose_y) pi_corr_y = max_oppose_y;
-
-        float vx_cmd = vx_ref + pi_corr_x;
-        float vy_cmd = vy_ref + pi_corr_y;
-
-        // ---------- 速度限幅 ----------
-        float v_norm = std::sqrt(vx_cmd * vx_cmd + vy_cmd * vy_cmd);
-        if (v_norm > zpro_max_v_)
-        {
-            vx_cmd *= zpro_max_v_ / v_norm;
-            vy_cmd *= zpro_max_v_ / v_norm;
-        }
-
-        // ---------- 距离比例刹车 ----------
-        float dist_to_goal = std::sqrt(std::pow(x - current_position.x, 2) +
-                                       std::pow(y - current_position.y, 2));
-        // 只在轨迹结束后刹车。轨迹活跃时（含弯道）B样条自己控速，刹车不干扰
-        float v_ref_norm = std::sqrt(ego_cmd_.velocity.x * ego_cmd_.velocity.x +
-                                     ego_cmd_.velocity.y * ego_cmd_.velocity.y);
-        bool traj_ended = (v_ref_norm < 0.05f);
-        if (dist_to_goal < zpro_brake_dist_ && traj_ended)
-        {
-            float brake_scale = dist_to_goal / zpro_brake_dist_;
-            if (v_norm > 1e-4f)
-            {
-                float min_scale = zpro_brake_min_v_ / v_norm;
-                if (brake_scale < min_scale) brake_scale = min_scale;
-            }
-            vx_cmd *= brake_scale;
-            vy_cmd *= brake_scale;
-        }
-
-        // 轨迹结束后限速 0.3，防动能过冲
-        if (traj_ended)
-        {
-            float v_end = std::sqrt(vx_cmd * vx_cmd + vy_cmd * vy_cmd);
-            if (v_end > 0.3f)
-            {
-                vx_cmd *= 0.3f / v_end;
-                vy_cmd *= 0.3f / v_end;
-            }
-        }
-
-        target_position.velocity.x = vx_cmd;
-        target_position.velocity.y = vy_cmd;
-
-        // ---------- 加速度前馈：连续增益，无死区无阈值 ----------
-        float ax_ref = ego_cmd_.acceleration.x;
-        float ay_ref = ego_cmd_.acceleration.y;
-        float v_norm_ref = std::sqrt(vx_ref * vx_ref + vy_ref * vy_ref);
-        float cross_va = vx_ref * ay_ref - vy_ref * ax_ref;
-        float a_normal = (v_norm_ref > 0.1f) ? std::abs(cross_va) / v_norm_ref : 0.0f;
-
-        float curv_gain = zpro_accel_ff_gain_ * std::min(a_normal / 2.0f, 1.0f);
-        target_position.acceleration_or_force.x = curv_gain * ax_ref;
-        target_position.acceleration_or_force.y = curv_gain * ay_ref;
-
-        // 轨迹结束清零积分
-        if (traj_ended)
-        {
-            integral_err_zx_ = 0.0f;
-            integral_err_zy_ = 0.0f;
-        }
-
-        // Z: 使用接口传入的目标高度（不用ego的）
-        target_position.position.z = z;
-
-        target_position.yaw = 0.0f;  // 全程机头正向，死锁为0
-
-        // 调试输出（0.3s 节流）
-        float dist = std::sqrt(std::pow(x - current_position.x, 2) +
-                               std::pow(y - current_position.y, 2));
-        ROS_INFO_THROTTLE(0.3,
-            "[Zpro] err=(%.3f,%.3f) inte=(%.2f,%.2f) vref=(%.2f,%.2f) vcmd=(%.2f,%.2f) aN=%.2f cG=%.2f dist=%.2f brk=%s",
-            err_x, err_y,
-            integral_err_zx_, integral_err_zy_,
-            vx_ref, vy_ref, vx_cmd, vy_cmd,
-            a_normal, curv_gain,
-            dist,
-            (dist < zpro_brake_dist_ && traj_ended) ? "ON" : "off");
-    }
-
-    // 到达判定
-    bool pos_reached = (tolerance(x, y, z) < tol);
-
-    if (pos_reached)
-    {
-        goal_sent_ = false;
-        integral_err_zx_ = 0.0f;
-        integral_err_zy_ = 0.0f;
-        return true;
-    }
-    return false;
-}
 // 导航接口（Zplus）：速度误差阻尼 + 位置外环PI + 加速度前馈
-bool ASNAV::navigationZplus(float x, float y, float z, float yaw, float tol)
+bool ASNAV::navigationEgo(float x, float y, float z, float yaw, float tol)
 {
     // ====== 计算实际 dt ======
     ros::Time now = ros::Time::now();
@@ -779,7 +613,7 @@ void ASNAV::slewLimitVel(double& vx, double& vy, double& vz,
 
 // 纯跟随 ego 轨迹（点击飞行模式）：不发自己的目标，目标来自 RViz 2D Nav Goal
 // 直接给 ego_planner_node，本函数只负责把 /drone_0_planning/pos_cmd 转成 PX4 setpoint。
-// 与 navigationZplus 的区别：不发布 /move_base_simple/goal；z 跟随 ego 轨迹而非写死；
+// 与 navigationEgo 的区别：不发布 /move_base_simple/goal；z 跟随 ego 轨迹而非写死；
 // 永不判定"到达"，持续跟随，直到 ego 停止发轨迹（到达目标后 FSM 回 WAIT_TARGET）→ 超时悬停。
 bool ASNAV::navigationEgoRviz()
 {
@@ -848,7 +682,7 @@ bool ASNAV::navigationEgoRviz()
         ego_slew_timer_ = 0.3f;      // 新轨迹后短暂限幅窗口，消除换点抽动
     }
 
-    // ====== 无条件积分（固定步长 0.02，与 navigationZplus 一致）======
+    // ====== 无条件积分（固定步长 0.02，与 navigationEgo 一致）======
     integral_zpx_ += err_x * 0.02;
     integral_zpy_ += err_y * 0.02;
     integral_zpx_ = std::max(-(double)zplus_max_integral_, std::min(integral_zpx_, (double)zplus_max_integral_));
@@ -930,7 +764,7 @@ bool ASNAV::navigationEgoRviz()
         return false;
     }
 
-    // ====== 构建 MAVROS 消息（与 navigationZplus 对齐）======
+    // ====== 构建 MAVROS 消息（与 navigationEgo 对齐）======
     target_position.header.stamp = now;
     target_position.coordinate_frame =
         mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
@@ -1038,7 +872,11 @@ bool ASNAV::navigationSuper(float x, float y, float z, float yaw, float tol, boo
             mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
         target_position.position.x = super_hold_px_;
         target_position.position.y = super_hold_py_;
-        target_position.position.z = z;
+        // rviz 模式下 z 跟随轨迹高度（navigationSuperRviz 传的 z 是 0，直接下发会把飞机压向 odom 原点）；
+        // 从未收到轨迹时保持当前高度。非 rviz 模式仍用调用方传入的 z。
+        target_position.position.z = super_rviz_mode_
+            ? (super_cmd_received_ ? super_cmd_.position.z : current_position.z)
+            : z;
         target_position.velocity.x = 0.0;
         target_position.velocity.y = 0.0;
         target_position.yaw = 0.0f;
@@ -1048,20 +886,31 @@ bool ASNAV::navigationSuper(float x, float y, float z, float yaw, float tol, boo
     // 有新鲜轨迹 → 复位锁存
     super_hold_active_ = false;
 
-    // ====== (C) PD + 参考速度前馈（对齐 ruikang，无 acc_ff） ======
+    // ====== (C) PD + 参考速度前馈（XYZ 统一为速度控制量） ======
+    // 2026-10-02: Z 由「直发 position.z 交给 PX4 位置环」改为与本接口 XY
+    // 同构的速度控制（对齐 fuel_nav）。仿真下 z 估计噪声大，位置环会全通透
+    // 放每一个 z 抖动，是高度震荡的主因之一。
     double ex = super_cmd_.position.x - current_position.x;
     double ey = super_cmd_.position.y - current_position.y;
     double dvx = super_cmd_.velocity.x - current_velocity.x;
     double dvy = super_cmd_.velocity.y - current_velocity.y;
 
+    // Z 目标：rviz 模式跟随轨迹高度，非 rviz 模式仍用调用方传入的 z（保持原语义）
+    double z_ref = super_rviz_mode_ ? super_cmd_.position.z : z;
+    double ez = z_ref - current_position.z;
+    double dvz = super_cmd_.velocity.z - current_velocity.z;
+
     // 无条件积分（固定步长 0.02，对齐 ruikang）
     integral_spx_ += ex * 0.02;
     integral_spy_ += ey * 0.02;
+    integral_spz_ += ez * 0.02;
     integral_spx_ = std::max(-(double)super_max_integral_, std::min(integral_spx_, (double)super_max_integral_));
     integral_spy_ = std::max(-(double)super_max_integral_, std::min(integral_spy_, (double)super_max_integral_));
+    integral_spz_ = std::max(-(double)super_max_integral_, std::min(integral_spz_, (double)super_max_integral_));
 
     double vx = super_kp_outer_ * ex + super_kv_outer_ * dvx + super_ki_outer_ * integral_spx_ + super_cmd_.velocity.x;
     double vy = super_kp_outer_ * ey + super_kv_outer_ * dvy + super_ki_outer_ * integral_spy_ + super_cmd_.velocity.y;
+    double vz = super_kp_outer_ * ez + super_kv_outer_ * dvz + super_ki_outer_ * integral_spz_ + super_cmd_.velocity.z;
 
     // XY 速度幅值限幅
     double speed = std::hypot(vx, vy);
@@ -1071,14 +920,17 @@ bool ASNAV::navigationSuper(float x, float y, float z, float yaw, float tol, boo
         vx *= scale;
         vy *= scale;
     }
+    // Z 速度独立限幅（super_max_vel_z_ 此前只加载未使用，这里启用）
+    vz = std::max(-(double)super_max_vel_z_, std::min(vz, (double)super_max_vel_z_));
 
-    // 构建消息：XY 速度 + Z 位置 + yaw 固定 0（对齐 ruikang velxy_posz）
+    // 构建消息：XYZ 全速度 + yaw（Z 不再走 PX4 位置环）
     target_position.header.stamp = now;
     target_position.coordinate_frame =
         mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
     target_position.type_mask =
         mavros_msgs::PositionTarget::IGNORE_PX |
         mavros_msgs::PositionTarget::IGNORE_PY |
+        mavros_msgs::PositionTarget::IGNORE_PZ |
         mavros_msgs::PositionTarget::IGNORE_AFX |
         mavros_msgs::PositionTarget::IGNORE_AFY |
         mavros_msgs::PositionTarget::IGNORE_AFZ |
@@ -1086,8 +938,7 @@ bool ASNAV::navigationSuper(float x, float y, float z, float yaw, float tol, boo
         mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
     target_position.velocity.x = vx;
     target_position.velocity.y = vy;
-    target_position.position.z = z;       // Z 由 PX4 位置环保持（用户高度）
-    target_position.velocity.z = 0.0;
+    target_position.velocity.z = vz;
     target_position.yaw = 0.0f;
 
     // rviz 调参模式：永不到达
@@ -1232,7 +1083,6 @@ bool ASNAV::controlYaw(float x, float y, float z, float target_yaw, float wait_s
         return false; // 旋转进行中
     }
 
-    // dropBallon(90, 90);
     
     if (!is_yaw_finished) 
     {
@@ -1582,220 +1432,33 @@ void ASNAV::reset_target()
     ROS_INFO("指令对象已重置，消除残留数据");
 }
 
-bool ASNAV::interceptBalloon(float charge_speed, float Kp_y, float Kp_z, float pop_box_height)
+// 三通道 PWM 舵机控制接口（复刻 lib_pwm_control，支持 M5/M6/M7）
+// 循环发送 + setpointPublish() 维持 OFFBOARD
+bool ASNAV::pwmControl(int pwm_channel_5, int pwm_channel_6, int pwm_channel_7)
 {
-    static float last_seen_box_height = 0.0f;
+    // 每次调用打印一次实际下发的通道值（不用 ONCE：投放/激光分次调用参数不同，ONCE 会吞掉后续日志）
+    ROS_INFO("PWM 指令发送：M5=%d, M6=%d, M7=%d", pwm_channel_5, pwm_channel_6, pwm_channel_7);
 
-    // 1. 刺破判定 (因为相机离气球还有近2米时气球就破了，所以判定框的高度要根据实测调整)
-    if ((ros::Time::now() - last_yolo_time_).toSec() > 0.5)
-    {
-        // pop_box_height 是你需要实测的：当两米长的枪尖顶到气球时，气球在画面里的高度是多少？
-        if (last_seen_box_height > pop_box_height * 0.8) // 稍微放宽一点判定条件
-        {
-            ROS_INFO("检测到气球爆炸！刺破成功！开始紧急倒车！");
-            last_seen_box_height = 0.0f; 
-            target_position.type_mask = 0x7BF;
-            target_position.velocity.x = 0; target_position.velocity.y = 0; target_position.velocity.z = 0;
-            return true; // 返回 true 触发战术撤退
-        }
-        else
-        {
-            ROS_WARN_THROTTLE(1.0, "目标跟丢，悬停等待...");
-            target_position.type_mask = 0x7BF;
-            target_position.velocity.x = 0; target_position.velocity.y = 0; target_position.velocity.z = 0;
-            return false;
-        }
-    }
-
-    float err_x = yolo_box_info.cameraXCenter - 320.0f;
-    float err_y = yolo_box_info.cameraYCenter - 270.0f;
-    last_seen_box_height = yolo_box_info.boxHeight;
-
-    // 2. 长矛冲锋分级控制策略
-    float vx = 0.0f;
-    float vy = 0.0f;
-    float vz = 0.0f;
-
-    // 这个值你需要根据你的相机焦距和实际情况去操场上推一推飞机来测定
-    float danger_box_height = 100.0f; 
-
-    if (yolo_box_info.boxHeight < danger_box_height)
-    {
-        // ==========================================
-        // 远距离阶段：常规追踪（允许微调 Yaw 来大范围跟目标）
-        // ==========================================
-        vx = charge_speed * 0.5f; // 远距离慢慢飞，保证对准
-        vy = std::clamp(-(Kp_y * err_x), -1.0f, 1.0f);
-        vz = std::clamp(-(Kp_z * err_y), -1.0f, 1.0f);
-    }
-    else
-    {
-        // ==========================================
-        // 近距离“长矛冲锋”阶段：绝对锁死 Yaw，全速平移追击！
-        // ==========================================
-        vx = charge_speed; // 全速冲锋！
-        
-        // 因为不转机头了，所以必须加大左右和上下的 P 控制力度，纯靠侧飞来追踪转动的气球
-        vy = std::clamp(-(Kp_y * err_x), -1.0f, 1.0f); 
-        vz = std::clamp(-(Kp_z * err_y), -1.0f, 1.0f);
-        
-        ROS_INFO_THROTTLE(0.5, "进入冲锋范围，已锁死机头，平移追击！");
-    }
-
-    // 3. 发布 MAVROS 速度指令
-    target_position.header.stamp = ros::Time::now();
-    target_position.coordinate_frame = mavros_msgs::PositionTarget::FRAME_BODY_NED;
-    target_position.type_mask = mavros_msgs::PositionTarget::IGNORE_PX |
-                                mavros_msgs::PositionTarget::IGNORE_PY |
-                                mavros_msgs::PositionTarget::IGNORE_PZ |
-                                mavros_msgs::PositionTarget::IGNORE_AFX |
-                                mavros_msgs::PositionTarget::IGNORE_AFY |
-                                mavros_msgs::PositionTarget::IGNORE_AFZ |
-                                mavros_msgs::PositionTarget::IGNORE_YAW;
-                                
-    target_position.velocity.x = vx;
-    target_position.velocity.y = vy;
-    target_position.velocity.z = vz;
-    target_position.yaw_rate = 0.0f;
-    
-
-    return false;
-}
-
-bool ASNAV::escapeBackward(float distance, float tol)
-{
-    static bool is_escaping = false;
-    static float escape_target_x, escape_target_y, escape_target_z;
-
-    if (!is_escaping)
-    {
-        // 计算正后方的绝对坐标
-        escape_target_x = current_position.x - distance * std::cos(current_yaw);
-        escape_target_y = current_position.y - distance * std::sin(current_yaw);
-        escape_target_z = current_position.z;
-        is_escaping = true;
-        ROS_WARN("启动战术撤退，向后退避 %.1f 米！", distance);
-    }
-
-    bool reached = position(escape_target_x, escape_target_y, escape_target_z, current_yaw, tol);
-    
-    if (reached)
-    {
-        is_escaping = false;
-        return true;
-    }
-    return false;
-}
-
-bool ASNAV::attackBalloon(float charge_speed)
-{
-    // 内部战术状态：
-    // 0 = 索敌与冲锋阶段 (ATTACK)
-    // 1 = 战术后退与判定阶段 (RETREAT & ASSESS)
-    static int combat_state = 0; 
-    static ros::Time retreat_start_time; // 记录开始后退的时间
-
-    // --- 比赛核心参数（必须线下实测） ---
-    const float LANCE_OVERSHOOT_HEIGHT = 193.0f; // 杆长设定值：框高于此值说明已越过气球刺空了
-    const double POP_CONFIRM_TIME = 2.5;         // 判定戳爆所需的时间：几秒内没看到气球就算爆了
-    const float KP_Y = 0.005f;
-    const float KP_Z = 0.005f;
-
-    // 当前帧是否能看到气球 (0.3秒内有更新就算看到，过滤掉单帧闪烁)
-    bool is_visible = (ros::Time::now() - last_yolo_time_).toSec() < 0.3;
-
-    // ====================================================
-    // 状态 0：索敌与冲锋
-    // ====================================================
-    if (combat_state == 0) 
-    {
-        if (is_visible)
-        {
-            // 1. 判定是否刺空（越界）
-            if (yolo_box_info.boxHeight > LANCE_OVERSHOOT_HEIGHT)
-            {
-                ROS_WARN("框高度(%.1f) > 设定杆长，刺偏越界！启动后退重试！", yolo_box_info.boxHeight);
-                combat_state = 1;
-                retreat_start_time = ros::Time::now(); // 开始计时
-                return false;
-            }
-
-            // 2. 正常长矛冲锋逻辑（锁死机头，平移追击）
-            float err_x = yolo_box_info.cameraXCenter - 320.0f;
-            float err_y = yolo_box_info.cameraYCenter - 270.0f;
-
-            float vy = std::clamp(-KP_Y * err_x, -1.0f, 1.0f);
-            float vz = std::clamp(-KP_Z * err_y, -1.0f, 1.0f);
-            
-            target_position.coordinate_frame = mavros_msgs::PositionTarget::FRAME_BODY_NED;
-            target_position.type_mask = 1471; // 忽略位置，使用速度
-            target_position.velocity.x = charge_speed; // 向前冲锋
-            target_position.velocity.y = vy;
-            target_position.velocity.z = vz;
-            target_position.yaw_rate = 0.0f; // 绝对锁死机头！
-        }
-        else
-        {
-            // 3. 冲锋途中气球突然消失（可能爆了，也可能被机械臂转走了）
-            ROS_INFO("目标突然消失，启动后退进行扎破确认...");
-            combat_state = 1;
-            retreat_start_time = ros::Time::now();
-        }
-    }
-    // ====================================================
-    // 状态 1：后退与判定（容错与确认机制）
-    // ====================================================
-    else if (combat_state == 1) 
-    {
-        // 1. 持续发送后退指令
-        target_position.coordinate_frame = mavros_msgs::PositionTarget::FRAME_BODY_NED;
-        target_position.type_mask = 1471;
-        target_position.velocity.x = -0.3f; // 以 0.8m/s 的速度往后退
-        target_position.velocity.y = 0.0f;
-        target_position.velocity.z = 0.0f;
-        target_position.yaw_rate = 0.0f;
-
-        // 2. 判定 A：捕捉到气球身影 -> 继续追踪继续戳
-        // 注意：加了 * 0.8f 是个专业技巧（滞回区间），防止它在边界值疯狂左右横跳
-        if (is_visible && yolo_box_info.boxHeight < (LANCE_OVERSHOOT_HEIGHT * 0.8f)) 
-        {
-            ROS_INFO("后退拉开距离后重新捕捉到气球，继续发起冲锋！");
-            combat_state = 0; // 切回冲锋状态
-            return false;
-        }
-
-        // 3. 判定 B：几秒内都没有气球 -> 判定戳爆
-        if (!is_visible && (ros::Time::now() - retreat_start_time).toSec() > POP_CONFIRM_TIME)
-        {
-            ROS_INFO("后退验证完成，%.1f 秒内未见目标，判定气球已扎爆！", POP_CONFIRM_TIME);
-            combat_state = 0; // 重置内部状态，为打下一个气球做准备
-            
-            // 发送一次刹车指令清空速度
-            target_position.velocity.x = 0.0f; 
-            return true; // 告诉主循环：这个目标搞定了！
-        }
-    }
-
-    return false;
-}
-// 投放接口
-bool ASNAV::dropBallon(int pwm_5, int pwm_6)
-
-{
     ros::Rate rate(20); // 20Hz 发送频率，每次 0.05 秒
-    for(int i = 0; i < 6; ++i )
+    for (int i = 0; i < 6; ++i)
     {
-        // 1. 发送舵机控制指令
-        lib_pwm_control(pwm_5, pwm_6);
-        mavros_cmd_command_client_.call(lib_ctrl_pwm);
-        ROS_INFO_ONCE("投放指令已发送，PWM 5: %d, PWM 6: %d", pwm_5, pwm_6);
-        
+        // 1. 填充并发送舵机控制指令（复刻 lib_pwm_control：command=187, param=ch/50.0-1.0）
+        mavros_msgs::CommandLong ctrl_pwm;
+        ctrl_pwm.request.command = 187;   // MAV_CMD_DO_SET_ACTUATOR
+        ctrl_pwm.request.param1 = (float)((double)pwm_channel_5 / 50.0 - 1.0);  // M5: 0~100 -> -1.0~+1.0
+        ctrl_pwm.request.param2 = (float)((double)pwm_channel_6 / 50.0 - 1.0);  // M6
+        ctrl_pwm.request.param3 = (float)((double)pwm_channel_7 / 50.0 - 1.0);  // M7
+        // target_system/component 默认 0 由 mavros 自动填；param7=0 是 DO_SET_ACTUATOR 索引位，必须为 0
+        if (!mavros_cmd_command_client_.call(ctrl_pwm)) {
+            ROS_ERROR_ONCE("pwmControl: 调用 /mavros/cmd/command 失败（mavros 未连接飞控？）");
+        }
+
         // 2. 维持 OFFBOARD 模式的心跳指令 (极为关键)
-        setpointPublish(); 
-        
-        // 3. 延时，让循环总耗时达到 1.5 秒左右，给舵机响应时间
+        setpointPublish();
+
+        // 3. 延时，给舵机响应时间
         ros::spinOnce();
-        rate.sleep(); 
+        rate.sleep();
     }
     return true; // 循环结束后再返回
 }
@@ -1842,11 +1505,11 @@ bool ASNAV::putShoot(float x, float y, float z, float yaw, float tol)
     }
 
     // ====================================================
-    // 阶段 1：投放 dropBallon(0, 100)
+    // 阶段 1：投放 pwmControl(100, 0)
     // ====================================================
     if (shoot_phase == 1)
     {
-        dropBallon(100, 0);
+        pwmControl(100, 0);
         ROS_INFO("[投放打靶] 已投放，飞向第一个靶点 (1.2, 1.0, 1)");
         shoot_phase = 2;
         return false;
@@ -1945,22 +1608,22 @@ bool ASNAV::putShoot(float x, float y, float z, float yaw, float tol)
     }
 
     // ====================================================
-    // 阶段 6：开火打靶 dropBallon(100, 100)
+    // 阶段 6：开火打靶 pwmControl(100, 100)
     // ====================================================
     if (shoot_phase == 6)
     {
-        dropBallon(100, 100);
+        pwmControl(100, 100);
         ROS_INFO("[投放打靶] 打靶完成，关闭激光");
         shoot_phase = 7;
         return false;
     }
 
     // ====================================================
-    // 阶段 7：关闭激光 dropBallon(100, 0)
+    // 阶段 7：关闭激光 pwmControl(100, 0)
     // ====================================================
     if (shoot_phase == 7)
     {
-        dropBallon(100, 0);
+        pwmControl(100, 0);
         ROS_INFO("[投放打靶] 激光已关闭，任务结束 ✓");
         shoot_phase = 0;
         letter_captured = false;
@@ -1970,20 +1633,64 @@ bool ASNAV::putShoot(float x, float y, float z, float yaw, float tol)
     return false;
 }
 // 投放优化接口
+// 悬停二段投放 + 激光打靶（2026-09-02 改）
+//   接线：M5=1号舵机(投放第1段, 使能=100)；M6=2号舵机(投放第2段, 使能=0, 设计如此)；M7=激光笔(开=100/关=0)
 bool ASNAV::putShootSimple(float x, float y, float z, float yaw, float tol)
 {
     static int shoot_phase = 0;
     static std::string target_letter;     // 悬停时保存的字母 A 或 B
-    static ros::Time arrive_time;         // 到达靶点的时间戳
+    static ros::Time arrive_time;         // 到达投放点/靶点的时间戳
     static bool letter_captured = false;  // 是否已在悬停阶段捕捉到字母
+    static bool drop1_done = false;       // 悬停第1s：1号舵机(M5=100)是否已投放
+    static bool drop2_done = false;       // 悬停第2s：2号舵机(M6=0)是否已投放
 
     // ====================================================
-    // 阶段 0：导航到投放点 + 悬停完成后捕捉 A/B（与 putShoot 相同）
+    // 阶段 0：仅导航到投放点（不悬停）；悬停+二段投放放到阶段1
     // ====================================================
     if (shoot_phase == 0)
     {
-        bool nav_done = navigationWithPosition(x, y, z, yaw, tol, 2.0f);
+        bool nav_done = navigationSuper(x, y, z, yaw, tol);
         if (nav_done)
+        {
+            arrive_time = ros::Time::now();   // 悬停投放计时起点
+            drop1_done = false;
+            drop2_done = false;
+            shoot_phase = 1;
+            ROS_INFO("[单靶打靶] 已到达投放点 (%.2f, %.2f, %.2f)，开始悬停二段投放(共2.5s)", x, y, z);
+        }
+        return false;
+    }
+
+    // ====================================================
+    // 阶段 1：投放点悬停 2.5s，期间两舵机分时投放
+    //   悬停第1s：M5=100 → 1号舵机投放第1段载荷
+    //   悬停第2s：M6=0   → 2号舵机投放第2段载荷（设计如此：M6 传 0 即使能）
+    //   悬停末段捕捉 A/B（沿用旧逻辑：到位悬停后才读 YOLO，避免中途误捕获）
+    // ====================================================
+    if (shoot_phase == 1)
+    {
+        // 维持投放点位置悬停（沿用 phase3 的保持写法）
+        position(x, y, z, yaw, 0.1f);
+
+        double hover_t = (ros::Time::now() - arrive_time).toSec();
+
+        // 悬停第1s：1号舵机投放。M6 保持 100（2号未投仍夹住），M7=0（激光关）
+        if (!drop1_done && hover_t >= 1.5)
+        {
+            pwmControl(100, 100, 0);
+            drop1_done = true;
+            ROS_INFO("[单靶打靶] 悬停第1s：1号舵机(M5=100)投放第1段");
+        }
+        // 悬停第2s：2号舵机投放（0 即使能）。M5 保持 100（1号已投），M7=0（激光关）
+        if (!drop2_done && hover_t >= 2.7)
+        {
+            pwmControl(100, 0, 0);
+            drop2_done = true;
+            ROS_INFO("[单靶打靶] 悬停第2s：2号舵机(M6=0)投放第2段");
+        }
+
+        // 悬停收尾：第2s投放动作约0.3s，留到 2.5s 再走，保证动作完成
+        if (hover_t >= 3.0)
         {
             double yolo_age = (ros::Time::now() - last_yolo_time_).toSec();
             bool yolo_fresh = (yolo_age < 1.0f);
@@ -1992,31 +1699,20 @@ bool ASNAV::putShootSimple(float x, float y, float z, float yaw, float tol)
             {
                 target_letter = yolo_box_info.Class;
                 letter_captured = true;
-                ROS_INFO("[单靶打靶] 悬停完成，捕捉到字母: %s (YOLO数据%.1fs前)",
+                ROS_INFO("[单靶打靶] 悬停投放完成，捕捉到字母: %s (YOLO数据%.1fs前)",
                          target_letter.c_str(), yolo_age);
             }
             else
             {
-                ROS_WARN("[单靶打靶] 悬停完成但未获得新鲜字母 (YOLO年龄=%.1fs, Class=%s)",
+                ROS_WARN("[单靶打靶] 悬停投放完成但未获得新鲜字母 (YOLO年龄=%.1fs, Class=%s)",
                          yolo_age,
                          yolo_box_info.Class.empty() ? "(空)" : yolo_box_info.Class.c_str());
             }
 
-            ROS_INFO("[单靶打靶] 导航悬停完成，目标字母: %s，开始投放",
-                     letter_captured ? target_letter.c_str() : "未识别");
-            shoot_phase = 1;
+            ROS_INFO("[单靶打靶] 二段投放完成，目标字母: %s，飞向靶点 (%.2f, %.2f, %.2f)",
+                     letter_captured ? target_letter.c_str() : "未识别", x, y, descend_z);
+            shoot_phase = 2;
         }
-        return false;
-    }
-
-    // ====================================================
-    // 阶段 1：投放 dropBallon(100, 0)（与 putShoot 相同）
-    // ====================================================
-    if (shoot_phase == 1)
-    {
-        dropBallon(100, 0);
-        ROS_INFO("[单靶打靶] 已投放，飞向唯一靶点 (%.2f, %.2f, %.2f)", x, y, descend_z);
-        shoot_phase = 2;
         return false;
     }
 
@@ -2025,7 +1721,7 @@ bool ASNAV::putShootSimple(float x, float y, float z, float yaw, float tol)
     // ====================================================
     if (shoot_phase == 2)
     {
-        bool arrived = position(x, -1.7, descend_z, 0.0f, tol);
+        bool arrived = position(-0.4, -1.7, descend_z, 0.0f, tol);
         if (arrived)
         {
             arrive_time = ros::Time::now();
@@ -2040,7 +1736,189 @@ bool ASNAV::putShootSimple(float x, float y, float z, float yaw, float tol)
     // ====================================================
     if (shoot_phase == 3)
     {
-        position(x, -1.7, descend_z, 0.0f, tol);
+        position(-0.4, -1.7, descend_z, 0.0f, tol);
+
+        if (last_yolo_d435i_time_ > arrive_time && !yolo_d435i_box_info_.Class.empty())
+        {
+            std::string detected = yolo_d435i_box_info_.Class;
+            ROS_INFO("[单靶打靶] 靶点(D435i)识别: %s (目标: %s)",
+                     detected.c_str(), target_letter.c_str());
+
+            if (detected == target_letter)
+            {
+                ROS_INFO("[单靶打靶] 靶点匹配！下降到%.2fm打靶...", descend_z);
+            }
+            else
+            {
+                ROS_WARN("[单靶打靶] 字母不匹配(%s vs %s)，仍下降打靶",
+                         detected.c_str(), target_letter.c_str());
+            }
+            shoot_phase = 4;
+            return false;
+        }
+
+        if ((ros::Time::now() - arrive_time).toSec() > 0.5f)
+        {
+            ROS_WARN("[单靶打靶] D435i识别超时，直接下降打靶");
+            shoot_phase = 4;
+        }
+        return false;
+    }
+
+    // ====================================================
+    // 阶段 4：下降至打靶高度
+    // ====================================================
+    if (shoot_phase == 4)
+    {
+        bool descended = flyDown(fly_height);
+        if (descended)
+        {
+            ROS_INFO("[单靶打靶] 已降至%.2fm，激光打靶", descend_z);
+            shoot_phase = 5;
+        }
+        return false;
+    }
+
+    // ====================================================
+    // 阶段 5：激光开火打靶（激光笔=M7，开=100）
+    // ====================================================
+    if (shoot_phase == 5)
+    {
+        // 激光开：M7=100；M5/M6 保持投放后状态(100/0)，不再动舵机
+        pwmControl(100, 0, 100);
+        ROS_INFO("[单靶打靶] 激光开火完成，关闭激光");
+        shoot_phase = 6;
+        return false;
+    }
+
+    // ====================================================
+    // 阶段 6：关闭激光（M7=0）
+    // ====================================================
+    if (shoot_phase == 6)
+    {
+        pwmControl(100, 0, 0);
+        ROS_INFO("[单靶打靶] 激光已关闭，任务结束 ✓");
+        shoot_phase = 0;
+        letter_captured = false;
+        drop1_done = false;
+        drop2_done = false;
+        return true;
+    }
+
+    return false;
+}
+// 投放优化接口 + A/B 动态靶点（2026-09-15 改）
+// 流程与接口调用方式完全对齐 putShootSimple（navigationSuper 导航 + 悬停二段投放 + M7 激光打靶）；
+// 唯一区别：打靶点位按阶段1悬停时识别的字母动态选择 —— A -> y=-1.7, B -> y=-2.7
+bool ASNAV::putShootPlus(float x, float y, float z, float yaw, float tol)
+{
+    static int shoot_phase = 0;
+    static std::string target_letter;     // 悬停时保存的字母 A 或 B
+    static ros::Time arrive_time;         // 到达投放点/靶点的时间戳
+    static bool letter_captured = false;  // 是否已在悬停阶段捕捉到字母
+    static bool drop1_done = false;       // 悬停第1.5s：1号舵机(M5=100)是否已投放
+    static bool drop2_done = false;       // 悬停第2.7s：2号舵机(M6=0)是否已投放
+
+    // ====================================================
+    // 阶段 0：仅导航到投放点（不悬停）；悬停+二段投放放到阶段1
+    // ====================================================
+    if (shoot_phase == 0)
+    {
+        bool nav_done = navigationSuper(x, y, z, yaw, tol);
+        if (nav_done)
+        {
+            arrive_time = ros::Time::now();   // 悬停投放计时起点
+            drop1_done = false;
+            drop2_done = false;
+            shoot_phase = 1;
+            ROS_INFO("[单靶打靶] 已到达投放点 (%.2f, %.2f, %.2f)，开始悬停二段投放(共2.5s)", x, y, z);
+        }
+        return false;
+    }
+
+    // ====================================================
+    // 阶段 1：投放点悬停 2.5s，期间两舵机分时投放
+    //   悬停第1s：M5=100 → 1号舵机投放第1段载荷
+    //   悬停第2s：M6=0   → 2号舵机投放第2段载荷（设计如此：M6 传 0 即使能）
+    //   悬停末段捕捉 A/B（到位悬停后才读 YOLO，避免中途误捕获）→ 决定打靶点位
+    // ====================================================
+    if (shoot_phase == 1)
+    {
+        // 维持投放点位置悬停（沿用 phase3 的保持写法）
+        position(x, y, z, yaw, 0.1f);
+
+        double hover_t = (ros::Time::now() - arrive_time).toSec();
+
+        // 悬停第1s：1号舵机投放。M6 保持 100（2号未投仍夹住），M7=0（激光关）
+        if (!drop1_done && hover_t >= 1.5)
+        {
+            pwmControl(100, 100, 0);
+            drop1_done = true;
+            ROS_INFO("[单靶打靶] 悬停第1s：1号舵机(M5=100)投放第1段");
+        }
+        // 悬停第2s：2号舵机投放（0 即使能）。M5 保持 100（1号已投），M7=0（激光关）
+        if (!drop2_done && hover_t >= 2.7)
+        {
+            pwmControl(100, 0, 0);
+            drop2_done = true;
+            ROS_INFO("[单靶打靶] 悬停第2s：2号舵机(M6=0)投放第2段");
+        }
+
+        // 悬停收尾：第2s投放动作约0.3s，留到 2.5s 再走，保证动作完成
+        if (hover_t >= 3.0)
+        {
+            double yolo_age = (ros::Time::now() - last_yolo_time_).toSec();
+            bool yolo_fresh = (yolo_age < 1.0f);
+
+            if (yolo_fresh && !yolo_box_info.Class.empty())
+            {
+                target_letter = yolo_box_info.Class;
+                letter_captured = true;
+                ROS_INFO("[单靶打靶] 悬停投放完成，捕捉到字母: %s (YOLO数据%.1fs前)",
+                         target_letter.c_str(), yolo_age);
+            }
+            else
+            {
+                ROS_WARN("[单靶打靶] 悬停投放完成但未获得新鲜字母 (YOLO年龄=%.1fs, Class=%s)",
+                         yolo_age,
+                         yolo_box_info.Class.empty() ? "(空)" : yolo_box_info.Class.c_str());
+                target_letter.clear();   // 未识别到则清空, 防止上次 A/B 残留导致打错靶
+                letter_captured = false;
+            }
+
+            // 打靶点位由识别结果决定：A -> y=-1.7, B -> y=-2.7
+            float target_y = (target_letter == "B") ? -2.7f : -1.7f;
+            ROS_INFO("[单靶打靶] 二段投放完成，目标字母: %s，飞向靶点 (%.2f, %.2f, %.2f)",
+                     letter_captured ? target_letter.c_str() : "未识别", x, target_y, descend_z);
+            shoot_phase = 2;
+        }
+        return false;
+    }
+
+    // ====================================================
+    // 阶段 2：飞到唯一靶点
+    // ====================================================
+    if (shoot_phase == 2)
+    {
+        // A/B 靶点动态选择（阶段1识别的字母）: A->y=-1.7, B->y=-2.7
+        float target_y = (target_letter == "B") ? -2.7f : -1.7f;
+        bool arrived = position(x, target_y, descend_z, 0.0f, tol);
+        if (arrived)
+        {
+            arrive_time = ros::Time::now();
+            shoot_phase = 3;
+            ROS_INFO("[单靶打靶] 到达靶点 (%.2f, %.2f)，等待 D435i 识别...", x, target_y);
+        }
+        return false;
+    }
+
+    // ====================================================
+    // 阶段 3：悬停于靶点，等待 D435i 识别到即下降
+    // ====================================================
+    if (shoot_phase == 3)
+    {
+        float target_y = (target_letter == "B") ? -2.7f : -1.7f;
+        position(x, target_y, descend_z, 0.0f, tol);
 
         if (last_yolo_d435i_time_ > arrive_time && !yolo_d435i_box_info_.Class.empty())
         {
@@ -2084,169 +1962,29 @@ bool ASNAV::putShootSimple(float x, float y, float z, float yaw, float tol)
     }
 
     // ====================================================
-    // 阶段 5：开火打靶 dropBallon(100, 100)
+    // 阶段 5：激光开火打靶（2026-09-02 改：激光笔=M7，开=100，用法同 putShootSimple）
     // ====================================================
     if (shoot_phase == 5)
     {
-        dropBallon(100, 100);
-        ROS_INFO("[单靶打靶] 打靶完成，关闭激光");
+        // 激光开：M7=100；M5/M6 保持投放后状态(100/0)，不再动舵机
+        pwmControl(100, 0, 100);
+        ROS_INFO("[单靶打靶] 激光开火完成，关闭激光");
         shoot_phase = 6;
         return false;
     }
 
     // ====================================================
-    // 阶段 6：关闭激光 dropBallon(100, 0)
+    // 阶段 6：关闭激光（M7=0）
     // ====================================================
     if (shoot_phase == 6)
     {
-        dropBallon(100, 0);
-        ROS_INFO("[单靶打靶] 激光已关闭，任务结束 ✓");
-        shoot_phase = 0;
-        letter_captured = false;
-        return true;
-    }
-
-    return false;
-}
-bool ASNAV::putShootPlus(float x, float y, float z, float yaw, float tol)
-{
-    static int shoot_phase = 0;
-    static std::string target_letter;     // 悬停时保存的字母 A 或 B
-    static ros::Time arrive_time;         // 到达靶点的时间戳
-    static bool letter_captured = false;  // 是否已在悬停阶段捕捉到字母
-
-    // ====================================================
-    // 阶段 0：导航到投放点 + 悬停完成后捕捉 A/B（与 putShoot 相同）
-    // ====================================================
-    if (shoot_phase == 0)
-    {
-        bool nav_done = navigationWithPosition(x, y, z, yaw, tol, 2.0f);
-        if (nav_done)
-        {
-            double yolo_age = (ros::Time::now() - last_yolo_time_).toSec();
-            bool yolo_fresh = (yolo_age < 1.0f);
-
-            if (yolo_fresh && !yolo_box_info.Class.empty())
-            {
-                target_letter = yolo_box_info.Class;
-                letter_captured = true;
-                ROS_INFO("[单靶打靶] 悬停完成，捕捉到字母: %s (YOLO数据%.1fs前)",
-                         target_letter.c_str(), yolo_age);
-            }
-            else
-            {
-                ROS_WARN("[单靶打靶] 悬停完成但未获得新鲜字母 (YOLO年龄=%.1fs, Class=%s)",
-                         yolo_age,
-                         yolo_box_info.Class.empty() ? "(空)" : yolo_box_info.Class.c_str());
-                target_letter.clear();   // 未识别到则清空, 防止上次 A/B 残留导致打错靶
-                letter_captured = false;
-            }
-
-            ROS_INFO("[单靶打靶] 导航悬停完成，目标字母: %s，开始投放",
-                     letter_captured ? target_letter.c_str() : "未识别");
-            shoot_phase = 1;
-        }
-        return false;
-    }
-
-    // ====================================================
-    // 阶段 1：投放 dropBallon(100, 0)（与 putShoot 相同）
-    // ====================================================
-    if (shoot_phase == 1)
-    {
-        dropBallon(100, 0);
-        ROS_INFO("[单靶打靶] 已投放，飞向唯一靶点 (%.2f, %.2f, %.2f)", x, y, descend_z);
-        shoot_phase = 2;
-        return false;
-    }
-
-    // ====================================================
-    // 阶段 2：飞到唯一靶点
-    // ====================================================
-    if (shoot_phase == 2)
-    {
-        // A/B 靶点动态选择（阶段0识别字母到 target_letter）: A->y=-1.7, B->y=-2.7
-        float target_y = (target_letter == "B") ? -2.7f : -1.7f;
-        bool arrived = position(x, target_y, descend_z, 0.0f, tol);
-        if (arrived)
-        {
-            arrive_time = ros::Time::now();
-            shoot_phase = 3;
-            ROS_INFO("[单靶打靶] 到达靶点，等待 D435i 识别...");
-        }
-        return false;
-    }
-
-    // ====================================================
-    // 阶段 3：悬停于靶点，等待 D435i 识别到即下降
-    // ====================================================
-    if (shoot_phase == 3)
-    {
-        float target_y = (target_letter == "B") ? -2.7f : -1.7f;
-        position(x, target_y, descend_z, 0.0f, tol);
-
-        if (last_yolo_d435i_time_ > arrive_time && !yolo_d435i_box_info_.Class.empty())
-        {
-            std::string detected = yolo_d435i_box_info_.Class;
-            ROS_INFO("[单靶打靶] 靶点(D435i)识别: %s (目标: %s)",
-                     detected.c_str(), target_letter.c_str());
-
-            if (detected == target_letter)
-            {
-                ROS_INFO("[单靶打靶] 靶点匹配！下降到%.2fm打靶...", descend_z);
-            }
-            else
-            {
-                ROS_WARN("[单靶打靶] 字母不匹配(%s vs %s)，仍下降打靶",
-                         detected.c_str(), target_letter.c_str());
-            }
-            shoot_phase = 4;
-            return false;
-        }
-
-        if ((ros::Time::now() - arrive_time).toSec() > 3.0f)
-        {
-            ROS_WARN("[单靶打靶] D435i识别超时，直接下降打靶");
-            shoot_phase = 4;
-        }
-        return false;
-    }
-
-    // ====================================================
-    // 阶段 4：下降至打靶高度
-    // ====================================================
-    if (shoot_phase == 4)
-    {
-        bool descended = flyDown(fly_height);
-        if (descended)
-        {
-            ROS_INFO("[单靶打靶] 已降至%.2fm，激光打靶", descend_z);
-            shoot_phase = 5;
-        }
-        return false;
-    }
-
-    // ====================================================
-    // 阶段 5：开火打靶 dropBallon(100, 100)
-    // ====================================================
-    if (shoot_phase == 5)
-    {
-        dropBallon(100, 100);
-        ROS_INFO("[单靶打靶] 打靶完成，关闭激光");
-        shoot_phase = 6;
-        return false;
-    }
-
-    // ====================================================
-    // 阶段 6：关闭激光 dropBallon(100, 0)
-    // ====================================================
-    if (shoot_phase == 6)
-    {
-        dropBallon(100, 0);
+        pwmControl(100, 0, 0);
         ROS_INFO("[单靶打靶] 激光已关闭，任务结束 ✓");
         shoot_phase = 0;
         letter_captured = false;
         target_letter.clear();
+        drop1_done = false;
+        drop2_done = false;
         return true;
     }
 
@@ -2396,7 +2134,6 @@ bool ASNAV::arTrackLanding(float ground_z, float altitude, float max_error, floa
 }
 
 
-
 // MAVROS状态回调
 void ASNAV::mavros_state_cb(const mavros_msgs::State::ConstPtr& msg)
 {
@@ -2461,7 +2198,7 @@ void ASNAV::setpointPublish()
         mavros_setpoint_raw_local_pub_.publish(target_position);
 }
 // 设置飞行模式函数
-void ASNAV::set_mode(string mode)
+void ASNAV::set_mode(std::string mode)
 {
     mavros_msgs::SetMode mode_msg;
     mode_msg.request.custom_mode = mode;

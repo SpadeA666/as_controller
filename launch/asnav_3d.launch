@@ -1,11 +1,11 @@
 <launch>
     <arg name="open_rviz" default="false" />
 
-    <node pkg="as_navigation" type="asnav_3d_node" name="asnav_3d_node" output="screen">  
+    <node pkg="as_controller" type="asnav_3d_node" name="asnav_3d_node" output="screen">  
         <param name="is_auto_land" type="bool" value="true" /> 
         <param name="target_class_name" type="string" value="red_ballon" /> 
-        <param name="fly_height" type="double" value="0.7" /> 
-        <param name="descend_z" type="double" value="1.4" /> 
+        <param name="fly_height" type="double" value="1.0" /> 
+        <param name="descend_z" type="double" value="1.5" /> 
         <!-- zpro 控制器参数 -->
         <param name="zpro_kp"              value="1.3"  type="double"/>
         <param name="zpro_ki"              value="0.4"  type="double"/>
@@ -20,8 +20,8 @@
         <!-- navigationSuper 控制器参数 -->
         <param name="super_kp_outer"     type="double" value="2.6" />   <!-- Kp: 位置误差→速度修正 -->
         <param name="super_kv_outer"     type="double" value="2.2" />   <!-- Kv: 速度误差阻尼（核心） -->
-        <param name="super_ki_outer"     type="double" value="0.15" />  <!-- Ki: 位置误差积分 -->
-        <param name="super_max_vel"      type="double" value="1.8" />  <!-- XY 速度限幅 (m/s) -->
+        <param name="super_ki_outer"     type="double" value="0.05" />  <!-- Ki: 位置误差积分 -->
+        <param name="super_max_vel"      type="double" value="2.5" />  <!-- XY 速度限幅 (m/s) -->
         <param name="super_max_vel_z"    type="double" value="1.0" />   <!-- Z  速度限幅 (m/s) -->
         <param name="super_max_integral" type="double" value="0.5" />   <!-- 积分抗饱和 -->
         <param name="super_traj_timeout" type="double" value="0.5" />   <!-- SUPER断联超时→悬停 (对齐 ruikang traj_timeout=0.5, 换点空窗不误触) -->
@@ -45,15 +45,15 @@
         <param name="zplus_traj_timeout" type="double" value="0.5" />   <!-- ego断联超时→悬停 -->
         <param name="zplus_max_accel"    type="double" value="3.0" />   <!-- 速度指令帧间加速度限幅 (m/s^2)，0=关闭：消除换航点/新轨迹切入时的速度阶跃（navigationZplus / navigationEgoRviz 共用） -->
 
-        <!-- positionSmooth 步长控制参数 -->
-        <param name="smooth_step_xy"      type="double" value="0.20"/>  <!-- 正常步长 (m/cycle) -->
-        <param name="smooth_slow_step_xy" type="double" value="0.15"/>  <!-- 接近目标减速步长 (m/cycle) -->
-        <param name="smooth_slow_dist"    type="double" value="0.50" />  <!-- 减速触发距离阈值 (m) -->
+        <!-- positionSmooth 步长控制参数（单位 m/cycle @50Hz；原 0.20/0.15 相当于 10/7.5 m/s，平滑失效导致阶跃晃动） -->
+        <param name="smooth_step_xy"      type="double" value="0.04"/>  <!-- 2 m/s @50Hz：接近段推进 -->
+        <param name="smooth_slow_step_xy" type="double" value="0.01"/>  <!-- 0.5 m/s @50Hz：减速区真正生效，回到代码默认值 -->
+        <param name="smooth_slow_dist"    type="double" value="0.50" />  <!-- 提早 0.8m 进入减速区，避免高速冲进容差圈 -->
 
     </node>
 
     <!-- <group if="$(arg open_rviz)">
-			<node pkg="rviz" type="rviz" name="rviz" required="true" args="-d $(find as_navigation)/rviz/asnav.rviz" />
+			<node pkg="rviz" type="rviz" name="rviz" required="true" args="-d $(find as_controller)/rviz/asnav.rviz" />
 	</group> -->
 
     <!-- <include file="$(find usb_cam)/launch/usb_cam-test.launch">

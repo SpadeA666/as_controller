@@ -21,8 +21,6 @@
 
 #include <actionlib/client/simple_action_client.h> 
 
-#include "lib_library.h"
-
 
 class ASNAV
 {
@@ -34,8 +32,7 @@ class ASNAV
     bool positionSmooth(float target_x, float target_y, float target_z, float tol, float hover_sec = 0.0f);
     bool navigation(float x, float y, float z, float yaw, float tol = 0.2f, float hover_sec = 1.0f);
     bool navigationWithPosition(float x, float y, float z, float yaw, float tol, float hover_sec);
-    bool navigationZpro(float x, float y, float z, float yaw, float tol = 0.2f);
-    bool navigationZplus(float x, float y, float z, float yaw, float tol = 0.2f);
+    bool navigationEgo(float x, float y, float z, float yaw, float tol = 0.2f);
     // SUPER 规划器接口（对齐 ruikang 控制器 2026-08-25；navigationSuperRviz 内部复用）
     // stop_at_goal=true: 到达后位置锁存收敛（= ruikang HOVER_HIGH），v<0.3 才返回 true（末点用）
     bool navigationSuper(float x, float y, float z, float yaw, float tol = 0.2f, bool stop_at_goal = false);
@@ -47,25 +44,25 @@ class ASNAV
     bool flyDown(float descend_z);
     bool flyUp(float height);
     void setpointPublish();
-    void set_mode(string mode);
+    void set_mode(std::string mode);
     bool autoLand();
     bool trackYoloDown(float max_distance = 0.35f, int tol = 30);
     bool trackYoloForward(float Kp_x, float Kp_y, float Kp_z, float target_box_height, int tol_xy, int tol_size);
     bool trackYoloing(float Kp_x, float Kp_y, float Kp_z, float target_box_height, int tol_xy, int tol_size);
     void reset_target();
-    bool interceptBalloon( float charge_speed, float Kp_y, float Kp_z, float pop_box_height);
-    bool escapeBackward(float distance, float tol);
-    bool attackBalloon(float charge_speed);
-    bool dropBallon(int pwm_5 = 100, int pwm_6 = 100);
+    // 三通道 PWM 舵机控制接口（复刻 lib_pwm_control，M5/M6/M7，参数 0~100 占空比）
+    // 循环发送 + setpointPublish() 维持 OFFBOARD
+    // pwm_channel_7 默认 50（中位）：只传两个参数时 M7 输出中位，行为与原 lib_pwm_control 一致
+    bool pwmControl(int pwm_channel_5, int pwm_channel_6, int pwm_channel_7 = 50);
     bool putShoot(float x, float y, float z, float yaw, float tol);
     bool putShootSimple(float x, float y, float z, float yaw, float tol);
-    // 2026-08-26: 同 putShootSimple, 但打靶点按阶段0识别的字母动态选择: A->y=-1.7, B->y=-2.7
+    // 2026-09-15: 流程与接口调用方式完全同 putShootSimple, 仅打靶点位按阶段1识别的字母动态选择: A->y=-1.7, B->y=-2.7
     bool putShootPlus(float x, float y, float z, float yaw, float tol);
     bool arTrackLanding(float ground_z = 0.0f, float altitude = 1.0f, float max_error = 0.20f, float vel_set = 0.15f, float camera_offset_x = 0.0f, float camera_offset_y = 0.0f);
 
     struct yoloBox
     {
-        string Class;
+        std::string Class;
         float cameraXCenter, cameraYCenter;
         float boxHeight;
     };
@@ -185,39 +182,27 @@ class ASNAV
     int ar_target_id_;
     float ar_position_detec_x_, ar_position_detec_y_, ar_position_detec_z_;
 
-    // navigationZpro 速度环PI修正参数（从launch加载）
-    float zpro_kp_;              // 位置误差 → 速度修正 P 增益
-    float zpro_ki_;              // 位置误差积分 → 速度修正 I 增益
-    float zpro_max_v_;           // 速度指令限幅 (m/s)
-    float zpro_integral_clamp_;  // 积分抗饱和上限
-    float zpro_err_thresh_;      // 积分生效的误差阈值 (m)
-    float zpro_brake_dist_;      // 刹车距离 (m)：距终点此距离内开始比例减速
-    float zpro_brake_min_v_;     // 刹车区最低速度 (m/s)：避免完全停住不动
-    float zpro_accel_ff_gain_;   // 加速度前馈增益 (0=关, 0.3~0.6=弯道补偿, 1=全量)
-    float integral_err_zx_;      // X 方向位置误差积分
-    float integral_err_zy_;      // Y 方向位置误差积分
-
-    // navigationZplus 参数（从launch加载）
+    // navigationEgo 参数（从launch加载）
     float zplus_kp_outer_;       // Kp: 位置误差 → 速度修正
     float zplus_kv_outer_;       // Kv: 速度误差阻尼 (v_ref→v_actual)
     float zplus_ki_outer_;       // Ki: 位置误差积分
     float zplus_max_vel_;        // 速度指令限幅 (m/s)
     float zplus_max_integral_;   // 积分抗饱和上限
     float zplus_traj_timeout_;   // 轨迹超时时间 (s)
-    float zplus_max_accel_;      // 速度指令帧间加速度限幅 (m/s^2)，0=关闭（navigationZplus / navigationEgoRviz 共用）
+    float zplus_max_accel_;      // 速度指令帧间加速度限幅 (m/s^2)，0=关闭（navigationEgo / navigationEgoRviz 共用）
 
     // positionSmooth 步长控制参数（从launch加载）
     double smooth_step_xy_;        // 正常步长 (m/cycle)，默认 0.18
     double smooth_slow_step_xy_;   // 接近目标时的减速步长 (m/cycle)，默认 0.01
     double smooth_slow_dist_;      // 触发减速的距离阈值 (m)，默认 0.5
 
-    // navigationZplus 运行时状态
+    // navigationEgo 运行时状态
     double integral_zpx_;         // X 位置误差积分
     double integral_zpy_;         // Y 位置误差积分
     ros::Time last_zplus_call_time_; // 上一帧调用时间 (dt计算)
     float zplus_traj_elapsed_;    // 新轨迹软启动计时器
     ros::Time last_ego_msg_time_; // 最近一次收到ego消息的时间戳
-    double last_zplus_vx_;            // 上一帧速度指令（斜率限制用，navigationZplus）
+    double last_zplus_vx_;            // 上一帧速度指令（斜率限制用，navigationEgo）
     double last_zplus_vy_;
     float zplus_slew_timer_ = 0.0f;   // >0 时启用 slewLimit（新目标/换点瞬间，正常跟踪旁路）
     ros::Time last_ego_rviz_call_time_; // navigationEgoRviz 帧间调用时间 (dt计算)
@@ -225,7 +210,7 @@ class ASNAV
     double last_ego_vy_;
     float ego_slew_timer_ = 0.0f;     // >0 时启用 slewLimit（新轨迹切入瞬间，正常跟踪旁路）
 
-    // navigationZplus Debounce 防穿透 + 位置保持
+    // navigationEgo Debounce 防穿透 + 位置保持
     ros::Time zplus_tol_entry_time_;  // 进入容差时刻
     bool zplus_tol_timing_;           // 是否正在 debounce 计时
     bool zplus_holding_;              // debounce 完成后是否在位置保持阶段

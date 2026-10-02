@@ -9,15 +9,15 @@
     <param name="base_global_planner" value="global_planner/GlobalPlanner" />
     <!-- <param name="base_global_planner" value="navfn/NavfnROS" /> -->
     <param name="base_local_planner" value="as_local_planner/AsLocalPlanner" />
-    <rosparam file="$(find as_navigation)/param/costmap_common_params.yaml" command="load" ns="global_costmap" />
-    <rosparam file="$(find as_navigation)/param/costmap_common_params.yaml" command="load" ns="local_costmap" />
-    <rosparam file="$(find as_navigation)/param/local_costmap_params.yaml" command="load" />
-    <rosparam file="$(find as_navigation)/param/global_costmap_params.yaml" command="load" />
-    <rosparam file="$(find as_navigation)/param/move_base_params.yaml" command="load" />
-    <!-- <rosparam file="$(find as_navigation)/param/dwa_local_planner_params.yaml" command="load" /> -->
+    <rosparam file="$(find as_controller)/param/costmap_common_params.yaml" command="load" ns="global_costmap" />
+    <rosparam file="$(find as_controller)/param/costmap_common_params.yaml" command="load" ns="local_costmap" />
+    <rosparam file="$(find as_controller)/param/local_costmap_params.yaml" command="load" />
+    <rosparam file="$(find as_controller)/param/global_costmap_params.yaml" command="load" />
+    <rosparam file="$(find as_controller)/param/move_base_params.yaml" command="load" />
+    <!-- <rosparam file="$(find as_controller)/param/dwa_local_planner_params.yaml" command="load" /> -->
     <remap from="cmd_vel" to="$(arg cmd_vel_topic)"/>
-    <rosparam file="$(find as_navigation)/param/as_local_planner_params.yaml" command="load" />
-    <rosparam file="$(find as_navigation)/param/global_planner_params.yaml" command="load" />
+    <rosparam file="$(find as_controller)/param/as_local_planner_params.yaml" command="load" />
+    <rosparam file="$(find as_controller)/param/global_planner_params.yaml" command="load" />
     <!-- <remap from="/odom" to="$(arg odom_topic)"/> -->
     <!-- <param name="DWAPlannerROS/min_vel_x" value="0.0" if="$(arg move_forward_only)" /> -->
   </node>

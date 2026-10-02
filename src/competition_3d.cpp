@@ -36,53 +36,54 @@ int main(int argc, char** argv)
             // }
             mission_num = 1;
             break;
-        case 1:  
-            if (uav.navigationSuper(-1.9f, 0.0f, uav.fly_height, NAN, 0.2f))
-            {
-                ROS_WARN("[Super] 测试完成");
-                mission_num = 2;
-            }
-            break;
+            
+        // case 1:  
+        //     if (uav.navigationSuper(-1.9f, 0.0f, uav.fly_height, NAN, 0.2f))
+        //     {
+        //         ROS_WARN("[Super] 测试完成");
+        //         mission_num = 2;
+        //     }
+        //     break;
 
-        case 2:  
-            if (uav.navigationSuper(-2.5f, -2.7f, uav.fly_height, NAN, 0.2f))
-            {
-                ROS_WARN("[Super] 测试完成");
-                mission_num = 3;
-            }
-            break;
+        // case 2:  
+        //     if (uav.navigationSuper(-2.5f, -2.7f, uav.fly_height, NAN, 0.2f))
+        //     {
+        //         ROS_WARN("[Super] 测试完成");
+        //         mission_num = 3;
+        //     }
+        //     break;
 
-        case 3:
-            if (uav.putShootSimple(-0.4f, -2.1f, uav.fly_height, 0.0f, 0.2f))
-            {
-                ROS_WARN("任务三完成！！！");
-                mission_num = 4;
-            }
-            break;
+        // case 3:
+        //     if (uav.putShootSimple(-0.5f, -2.05f, uav.fly_height, 0.0f, 0.2f))
+        //     {
+        //         ROS_WARN("任务三完成！！！");
+        //         mission_num = 4;
+        //     }
+        //     break;
 
-        case 4:  
-            if (uav.navigationSuper(-2.5f, -2.7f, uav.fly_height, NAN, 0.2f))
-            {
-                ROS_WARN("[Super] 测试完成");
-                mission_num = 5;
-            }
-            break;
+        // case 4:  
+        //     if (uav.navigationSuper(-2.5f, -2.7f, uav.fly_height, NAN, 0.2f))
+        //     {
+        //         ROS_WARN("[Super] 测试完成");
+        //         mission_num = 5;
+        //     }
+        //     break;
 
-        case 5:  
-            if (uav.navigationSuper(-1.9f, 0.0f, uav.fly_height, NAN, 0.2f))
-            {
-                ROS_WARN("[Super] 测试完成");
-                mission_num = 6;
-            }
-            break;
+        // case 5:  
+        //     if (uav.navigationSuper(-1.9f, 0.0f, uav.fly_height, NAN, 0.2f))
+        //     {
+        //         ROS_WARN("[Super] 测试完成");
+        //         mission_num = 6;
+        //     }
+        //     break;
 
-        case 6:  
-            if (uav.navigationSuper(0.0f, 0.0f, uav.fly_height, NAN, 0.2f, true))
-            {
-                ROS_WARN("[Super] 测试完成");
-                mission_num = 14;
-            }
-            break;
+        // case 6:  
+        //     if (uav.navigationSuper(0.0f, 0.0f, uav.fly_height, NAN, 0.2f, true))
+        //     {
+        //         ROS_WARN("[Super] 测试完成");
+        //         mission_num = 14;
+        //     }
+        //     break;
 /////@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@super任务航点一
         // case 1:  
         //     if (uav.navigationSuper(-2.55f, 0.0f, uav.fly_height, NAN, 0.2f))
@@ -100,13 +101,13 @@ int main(int argc, char** argv)
         //     }
         //     break;
 
-        // case 3:
-        //     if (uav.putShootSimple(-0.3f, -2.1f, uav.fly_height, 0.0f, 0.2f))
-        //     {
-        //         ROS_WARN("任务三完成！！！");
-        //         mission_num = 4;
-        //     }
-        //     break;
+        case 3:
+            if (uav.putShootSimple(-0.5f, -2.05f, uav.fly_height, 0.0f, 0.2f))
+            {
+                ROS_WARN("任务三完成！！！");
+                mission_num = 4;
+            }
+            break;
 
         // case 4:  
         //     if (uav.navigationSuper(-1.8f, -2.7f, uav.fly_height, NAN, 0.2f))
@@ -124,13 +125,13 @@ int main(int argc, char** argv)
         //     }
         //     break;
 
-        // case 6:  
-        //     if (uav.navigationSuper(0.0f, 0.0f, uav.fly_height, NAN, 0.2f, true))
-        //     {
-        //         ROS_WARN("[Super] 测试完成");
-        //         mission_num = 14;
-        //     }
-        //     break;
+        case 6:  
+            if (uav.navigationSuper(0.0f, 0.0f, uav.fly_height, NAN, 0.2f, true))
+            {
+                ROS_WARN("[Super] 测试完成");
+                mission_num = 14;
+            }
+            break;
 ////@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@super任务航点一
 
 

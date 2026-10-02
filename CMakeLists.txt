@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 2.8.3)
-project(as_navigation)
+project(as_controller)
  
 ## Compile as C++11, supported in ROS Kinetic and newer
 #  add_compile_options(-std=c++11)
@@ -64,12 +64,10 @@ include_directories(
   /usr/local/include
 )
 
-link_directories(
-  # /usr/lib/aarch64-linux-gnu/tegra
-  # /usr/lib/aarch64-linux-gnu
-  ${CMAKE_CURRENT_SOURCE_DIR}/lib
-  # ${catkin_LIB_DIRS})
-)
+# 2026-10-02: 移除对包内预编译库 lib/ 的依赖（dropBallon 已删除，PWM 改由 pwmControl 自实现）
+# link_directories(
+#   ${CMAKE_CURRENT_SOURCE_DIR}/lib
+# )
 # add_executable(navigation_with_waypoint_node src/navigation_with_waypoint.cpp)
 add_library(asnav_api_2d src/api_2d.cpp)
 add_library(asnav_api_3d src/api_3d.cpp)
@@ -96,13 +94,11 @@ target_link_libraries(asnav_2d_node
   ${catkin_LIBRARIES}
   ${Boost_LIBRARIES}
   asnav_api_2d
-  lib
 )
 target_link_libraries(asnav_3d_node
   ${catkin_LIBRARIES}
   ${Boost_LIBRARIES}
   asnav_api_3d
-  lib
 )
 # install(TARGETS detectnet DESTINATION bin)
 

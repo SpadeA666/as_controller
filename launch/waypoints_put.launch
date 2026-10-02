@@ -9,7 +9,7 @@
     <arg name="putpoint2" default="8" />
     <arg name="putpoint3" default="9" />
 
-    <node pkg="as_navigation" type="waypoints_put_node" name="waypoints_put_node" output="screen">
+    <node pkg="as_controller" type="waypoints_put_node" name="waypoints_put_node" output="screen">
         <param name="fly_height" value="$(arg fly_height)" />
         <!-- <param name="hover_low_height" value="$(arg hover_low_height)" />
         <param name="shot_height" value="$(arg shot_height)" />
@@ -43,7 +43,7 @@
 
     </node>
     
-<include file="$(find as_navigation)/launch/move_base.launch">
+<include file="$(find as_controller)/launch/move_base.launch">
     </include>
 
 </launch>

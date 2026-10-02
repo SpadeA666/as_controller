@@ -860,12 +860,29 @@ bool ASNAV::attackBalloon(float charge_speed)
     return false;
 }
 
-bool ASNAV::dropBallon(int pwm_5, int pwm_6)
+// 三通道 PWM 舵机控制接口（复刻 lib_pwm_control，M5/M6/M7，参数 0~100 占空比）
+// 2026-10-02: 不再调用预编译库 liblib.so，自实现 CommandLong(187, MAV_CMD_DO_SET_ACTUATOR)
+bool ASNAV::pwmControl(int pwm_channel_5, int pwm_channel_6, int pwm_channel_7)
 {
-      lib_pwm_control(pwm_5, pwm_6);
-      mavros_cmd_command_client_.call(lib_ctrl_pwm);
-      ROS_INFO_ONCE("投放指令已发送，PWM 5: %d, PWM 6: %d", pwm_5, pwm_6);
-      return true;
+    ROS_INFO("PWM 指令发送：M5=%d, M6=%d, M7=%d", pwm_channel_5, pwm_channel_6, pwm_channel_7);
+
+    ros::Rate rate(20); // 20Hz 发送频率，每次 0.05 秒
+    for (int i = 0; i < 6; ++i)
+    {
+        mavros_msgs::CommandLong ctrl_pwm;
+        ctrl_pwm.request.command = 187;   // MAV_CMD_DO_SET_ACTUATOR
+        ctrl_pwm.request.param1 = (float)((double)pwm_channel_5 / 50.0 - 1.0);  // M5: 0~100 -> -1.0~+1.0
+        ctrl_pwm.request.param2 = (float)((double)pwm_channel_6 / 50.0 - 1.0);  // M6
+        ctrl_pwm.request.param3 = (float)((double)pwm_channel_7 / 50.0 - 1.0);  // M7
+        if (!mavros_cmd_command_client_.call(ctrl_pwm)) {
+            ROS_ERROR_ONCE("pwmControl: 调用 /mavros/cmd/command 失败（mavros 未连接飞控？）");
+        }
+
+        setpointPublish();   // 维持 OFFBOARD 模式的心跳指令
+        ros::spinOnce();
+        rate.sleep();
+    }
+    return true;
 }
 
 
@@ -910,7 +927,7 @@ void ASNAV::setpointPublish()
         mavros_setpoint_raw_local_pub_.publish(target_position);
 }
 // 设置飞行模式函数
-void ASNAV::set_mode(string mode)
+void ASNAV::set_mode(std::string mode)
 {
     mavros_msgs::SetMode mode_msg;
     mode_msg.request.custom_mode = mode;
