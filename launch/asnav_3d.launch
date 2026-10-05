@@ -2,48 +2,33 @@
     <arg name="open_rviz" default="false" />
 
     <node pkg="as_controller" type="asnav_3d_node" name="asnav_3d_node" output="screen">  
-        <param name="is_auto_land" type="bool" value="true" /> 
         <param name="target_class_name" type="string" value="red_ballon" /> 
         <param name="fly_height" type="double" value="1.0" /> 
         <param name="descend_z" type="double" value="1.5" /> 
-        <!-- zpro 控制器参数 -->
-        <param name="zpro_kp"              value="1.3"  type="double"/>
-        <param name="zpro_ki"              value="0.4"  type="double"/>
-        <param name="zpro_max_v"           value="1.0"  type="double"/>
-        <param name="zpro_integral_clamp"  value="0.5"  type="double"/>
-        <param name="zpro_err_thresh"      value="0.5"  type="double"/>
-        <!-- 短距离激进刹车：1.5米就开始减速 -->
-        <param name="zpro_brake_dist"  value="1.0"  type="double"/>
-        <param name="zpro_brake_min_v" value="0.10" type="double"/>
-        <param name="zpro_accel_ff_gain"     value="0.2"  type="double"/>  <!-- 0=关, 0.5=半量, 1=全量 -->
+        <!-- 导航轴策略全局默认：接口 nav_mode<0 时使用（0=全跟规划器 1=只Z 2=只Yaw 3=锁高并锁0） -->
+        <param name="nav_default_mode" type="int" value="3" />
 
         <!-- navigationSuper 控制器参数 -->
-        <param name="super_kp_outer"     type="double" value="2.6" />   <!-- Kp: 位置误差→速度修正 -->
-        <param name="super_kv_outer"     type="double" value="2.2" />   <!-- Kv: 速度误差阻尼（核心） -->
-        <param name="super_ki_outer"     type="double" value="0.05" />  <!-- Ki: 位置误差积分 -->
-        <param name="super_max_vel"      type="double" value="2.5" />  <!-- XY 速度限幅 (m/s) -->
+        <param name="super_kp_outer"     type="double" value="1.0" />   <!-- Kp: 位置误差→速度修正 -->
+        <param name="super_kv_outer"     type="double" value="0.0" />   <!-- Kv: 速度误差阻尼（核心） -->
+        <param name="super_ki_outer"     type="double" value="0.0" />  <!-- Ki: 位置误差积分 -->
+        <param name="super_ff_gain"     type="double" value="0.5" />   <!-- 速度前馈系数 -->
+        <param name="super_ff_gain_z"   type="double" value="0.0" />  <!-- Z速度前馈系数 -->
+        <param name="super_max_vel"      type="double" value="1.0" />  <!-- XY 速度限幅 (m/s) -->
         <param name="super_max_vel_z"    type="double" value="1.0" />   <!-- Z  速度限幅 (m/s) -->
         <param name="super_max_integral" type="double" value="0.5" />   <!-- 积分抗饱和 -->
-        <param name="super_traj_timeout" type="double" value="0.5" />   <!-- SUPER断联超时→悬停 (对齐 ruikang traj_timeout=0.5, 换点空窗不误触) -->
-        <param name="super_rotate_180"   type="bool"   value="false" /> <!-- 坐标系旋转 -->
-        <param name="ego_rotate_180"     type="bool"   value="false" /> <!-- ego 轨迹 180°旋转，默认 false：LIO系=PX4 local -->
-        <param name="super_max_accel"    type="double" value="3.0" />
-        <param name="super_acc_ff"      type="double" value="0" />   <!-- 加速度前馈前瞻(s), 0=关闭: 消除高速转弯外甩 -->
+        <param name="super_traj_timeout" type="double" value="0.5" />   <!-- SUPER断联超时→悬停 -->
 
-
-
-        <!-- 第一梯队：三段式增益 -->
-        <param name="zplus_kp_outer"     type="double" value="1.4" />   <!-- Kp: 位置误差→速度修正 -->
-        <param name="zplus_kv_outer"     type="double" value="1.5" />   <!-- Kv: 速度误差阻尼（核心） -->
-        <param name="zplus_ki_outer"     type="double" value="0.3" />   <!-- Ki: 位置误差积分 -->
-
-        <!-- 限幅 -->
-        <param name="zplus_max_vel"      type="double" value="1.1" />   <!-- = max_vel ，给修正留空间 -->
-        <param name="zplus_max_integral" type="double" value="0.5" />   <!-- 积分抗饱和 -->
-
-        <!-- 安全 -->
-        <param name="zplus_traj_timeout" type="double" value="0.5" />   <!-- ego断联超时→悬停 -->
-        <param name="zplus_max_accel"    type="double" value="3.0" />   <!-- 速度指令帧间加速度限幅 (m/s^2)，0=关闭：消除换航点/新轨迹切入时的速度阶跃（navigationZplus / navigationEgoRviz 共用） -->
+        <!-- navigationEgo 控制器参数 -->
+        <param name="ego_kp_outer"     type="double" value="1.4" />   <!-- Kp: 位置误差→速度修正 -->
+        <param name="ego_kv_outer"     type="double" value="1.5" />   <!-- Kv: 速度误差阻尼（核心） -->
+        <param name="ego_ki_outer"     type="double" value="0.3" />   <!-- Ki: 位置误差积分 -->
+        <param name="ego_ff_gain"       type="double" value="0.5" />   <!-- 速度前馈系数XY -->
+        <param name="ego_ff_gain_z"     type="double" value="0.0" />   <!-- 速度前馈系数Z -->
+        <param name="ego_max_vel"      type="double" value="1.1" />   <!-- = max_vel ，给修正留空间 -->
+        <param name="ego_max_vel_z"     type="double" value="1.0" />   <!-- Z 速度限幅 -->
+        <param name="ego_max_integral" type="double" value="0.5" />   <!-- 积分抗饱和 -->
+        <param name="ego_traj_timeout" type="double" value="0.5" />   <!-- ego断联超时→悬停（超时/轨迹完成 → 位置锁存） -->
 
         <!-- positionSmooth 步长控制参数（单位 m/cycle @50Hz；原 0.20/0.15 相当于 10/7.5 m/s，平滑失效导致阶跃晃动） -->
         <param name="smooth_step_xy"      type="double" value="0.04"/>  <!-- 2 m/s @50Hz：接近段推进 -->

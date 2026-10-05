@@ -61,7 +61,7 @@ int main(int argc, char** argv)
         case 1:
             if (uav.navigation(1.86f, -1.1f, uav.fly_height, 0.0f, 0.2f))
             {
-                ROS_WARN("到达", hover_duration);
+                ROS_WARN("到达, 悬停 %.1fs", hover_duration);
                 is_hovering = true;                  // 触发悬停状态
                 hover_start_time = ros::Time::now(); // 记录当前时间
                 mission_num = 3;

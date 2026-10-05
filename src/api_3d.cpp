@@ -10,20 +10,24 @@ ASNAV::ASNAV(ros::NodeHandle& nh) : nh_(nh)
 {
     // 从参数服务器获取参数
     ros::NodeHandle nh_private("~");
-    nh_private.param<bool>("is_auto_land", is_auto_land, true);
     nh_private.param<std::string>("target_class_name", target_class_name, "red_ballon");
     nh_private.param<float>("fly_height", fly_height, 0.5f);
     nh_private.param<float>("descend_z", descend_z, 0.3f);
 
 
     // navigationEgo 参数加载
-    nh_private.param<float>("zplus_kp_outer", zplus_kp_outer_, 2.5f);
-    nh_private.param<float>("zplus_kv_outer", zplus_kv_outer_, 0.8f);
-    nh_private.param<float>("zplus_ki_outer", zplus_ki_outer_, 0.3f);
-    nh_private.param<float>("zplus_max_vel", zplus_max_vel_, 2.0f);
-    nh_private.param<float>("zplus_max_integral", zplus_max_integral_, 0.5f);
-    nh_private.param<float>("zplus_traj_timeout", zplus_traj_timeout_, 0.5f);
-    nh_private.param<float>("zplus_max_accel", zplus_max_accel_, 2.5f);
+    nh_private.param<float>("ego_kp_outer", ego_kp_outer_, 2.5f);
+    nh_private.param<float>("ego_kv_outer", ego_kv_outer_, 0.8f);
+    nh_private.param<float>("ego_ki_outer", ego_ki_outer_, 0.3f);
+    nh_private.param<float>("ego_ff_gain", ego_ff_gain_, 0.5f);
+    nh_private.param<float>("ego_ff_gain_z", ego_ff_gain_z_, 0.0f);
+    nh_private.param<float>("ego_max_vel", ego_max_vel_, 2.0f);
+    nh_private.param<float>("ego_max_vel_z", ego_max_vel_z_, 1.0f);
+    nh_private.param<float>("ego_max_integral", ego_max_integral_, 0.5f);
+    nh_private.param<float>("ego_traj_timeout", ego_traj_timeout_, 0.5f);
+
+    // 导航轴策略全局默认（nav_mode < 0 时使用；见 NavMode）
+    nh_private.param<int>("nav_default_mode", nav_default_mode_, 0);
 
     // positionSmooth 步长控制参数
     nh_private.param<double>("smooth_step_xy", smooth_step_xy_, 0.18f);
@@ -34,13 +38,12 @@ ASNAV::ASNAV(ros::NodeHandle& nh) : nh_(nh)
     nh_private.param<float>("super_kp_outer", super_kp_outer_, 2.5f);
     nh_private.param<float>("super_kv_outer", super_kv_outer_, 0.8f);
     nh_private.param<float>("super_ki_outer", super_ki_outer_, 0.3f);
+    nh_private.param<float>("super_ff_gain", super_ff_gain_, 0.5f);
+    nh_private.param<float>("super_ff_gain_z", super_ff_gain_z_, 0.0f);
     nh_private.param<float>("super_max_vel", super_max_vel_, 2.0f);
     nh_private.param<float>("super_max_vel_z", super_max_vel_z_, 1.0f);
     nh_private.param<float>("super_max_integral", super_max_integral_, 0.5f);
     nh_private.param<float>("super_traj_timeout", super_traj_timeout_, 0.5f);
-    nh_private.param<bool>("super_rotate_180", super_rotate_180_, false);
-    nh_private.param<float>("super_max_accel", super_max_accel_, 2.5f);
-    nh_private.param<float>("super_acc_ff", super_acc_ff_, 0.2f);   // 加速度前馈前瞻(s), 0=关闭
 
     
     // 初始化订阅和发布
@@ -69,43 +72,31 @@ ASNAV::ASNAV(ros::NodeHandle& nh) : nh_(nh)
     finish_planning_time = 0;
 
     ar_marker_found_ = false;
-    ar_target_id_ = 8;
     ar_position_detec_x_ = 0;
     ar_position_detec_y_ = 0;
     ar_position_detec_z_ = 0;
 
-    integral_zpx_ = 0.0;
-    integral_zpy_ = 0.0;
-    last_zplus_call_time_ = ros::Time(0);
-    zplus_traj_elapsed_ = 0.0f;
+    integral_egox_ = 0.0;
+    integral_egoy_ = 0.0;
+    integral_egoz_ = 0.0;
     last_ego_msg_time_ = ros::Time(0);
-    zplus_last_traj_id_ = 0;
-    last_zplus_vx_ = 0.0;
-    last_zplus_vy_ = 0.0;
-    last_ego_rviz_call_time_ = ros::Time(0);
-    last_ego_vx_ = 0.0;
-    last_ego_vy_ = 0.0;
+    ego_rviz_mode_ = false;
+    ego_hold_px_ = 0.0;
+    ego_hold_py_ = 0.0;
+    ego_hold_active_ = false;
 
-    zplus_tol_timing_ = false;
-    zplus_tol_entry_time_ = ros::Time(0);
-    zplus_holding_ = false;
-    zplus_hold_start_time_ = ros::Time(0);
+    ego_tol_timing_ = false;
+    ego_tol_entry_time_ = ros::Time(0);
 
     integral_spx_ = 0.0;
     integral_spy_ = 0.0;
     integral_spz_ = 0.0;
-    last_super_call_time_ = ros::Time(0);
     last_super_msg_time_ = ros::Time(0);
-    super_traj_elapsed_ = 0.0f;
     super_tol_timing_ = false;
     super_tol_entry_time_ = ros::Time(0);
     super_yaw_finishing_ = false;
     super_yaw_timing_ = false;
     super_yaw_entry_time_ = ros::Time(0);
-    super_goal_time_ = ros::Time(0);
-    last_super_vx_ = 0.0;
-    last_super_vy_ = 0.0;
-    last_super_vz_ = 0.0;
 }
 
 ASNAV::~ASNAV()
@@ -129,7 +120,7 @@ bool ASNAV::takeoff(float height)
         rate.sleep();
     }
 
-    position(0.0f, 0.0f, height, 0.0f, 0.25f);
+    position(0.0f, 0.0f, height, 0.0f, 0.15f);
 
     for(int i = 0; i < 100 && ros::ok() ; ++i)
     {
@@ -399,19 +390,23 @@ bool ASNAV::navigationWithPosition(float x, float y, float z, float yaw, float t
     }
     return false;
 }
-// 导航接口（Zplus）：速度误差阻尼 + 位置外环PI + 加速度前馈
-bool ASNAV::navigationEgo(float x, float y, float z, float yaw, float tol)
+// 导航接口（Ego)
+bool ASNAV::navigationEgo(float x, float y, float z, float yaw, float tol, bool stop_at_goal, int nav_mode)
 {
-    // ====== 计算实际 dt ======
-    ros::Time now = ros::Time::now();
-    float dt = last_zplus_call_time_.isZero()
-                   ? 0.01f
-                   : (now - last_zplus_call_time_).toSec();
-    dt = std::clamp(dt, 0.005f, 0.1f);
-    last_zplus_call_time_ = now;
+    // ====== 轴策略解析（2026-10-05）======
+    // nav_mode < 0 → 用 launch 全局默认；navigationEgoRviz 会传入 fly_height / 0.0f 作为锁定值
+    const int m = (nav_mode < 0) ? nav_default_mode_ : nav_mode;
+    const bool use_z   = (m == NAV_FULL || m == NAV_Z_ONLY);
+    const bool use_yaw = (m == NAV_FULL || m == NAV_YAW_ONLY);
+    const float yaw_cmd = std::isnan(yaw) ? 0.0f : yaw;   // 形参保护：NAN → 0
 
-    // ====== 新目标检测 ======
-    if (!goal_sent_)
+    ros::Time now = ros::Time::now();
+    const float kDebounce = 0.15f;    // 到达防抖
+    const double kStopVel = 0.3;      // 末点锁存收敛速度
+
+    // ====== (A) 新目标检测：发布 goal 到 EGO 规划器 ======
+    // rviz 测试模式（ego_rviz_mode_）下不发 goal
+    if (!goal_sent_ && !ego_rviz_mode_)
     {
         geometry_msgs::PoseStamped goal;
         goal.header.stamp = now;
@@ -419,331 +414,38 @@ bool ASNAV::navigationEgo(float x, float y, float z, float yaw, float tol)
         goal.pose.position.x = x;
         goal.pose.position.y = y;
         goal.pose.position.z = z;
-        goal.pose.orientation = tf::createQuaternionMsgFromYaw(yaw);
+        goal.pose.orientation = tf::createQuaternionMsgFromYaw(0.0f);
         goal_pub_.publish(goal);
 
         goal_sent_ = true;
-        integral_zpx_ = 0.0;
-        integral_zpy_ = 0.0;
-        // 斜率限制以当前实际速度为种子：case 切换瞬间指令速度与实际速度天然连续
-        last_zplus_vx_ = current_velocity.x;
-        last_zplus_vy_ = current_velocity.y;
-        zplus_slew_timer_ = 0.3f;      // 新目标后短暂限幅窗口，消除换点抽动
-        ROS_INFO("[Zplus] 新目标 (%.2f, %.2f, %.2f)", x, y, z);
+        last_ego_msg_time_ = now;   // 刷新超时：换点空窗不进超时刹车
+        integral_egox_ = 0.0;
+        integral_egoy_ = 0.0;
+        integral_egoz_ = 0.0;
+        ego_tol_timing_ = false;
+        ego_hold_active_ = false;   // 新目标退出锁存
+        ROS_INFO("[Ego] 新目标 (%.2f, %.2f, %.2f) → 已发布到 /move_base_simple/goal", x, y, z);
     }
 
-    // ====== 轨迹超时保护：ego 断联 → 悬停 ======
+    // ====== (B) 轨迹有效判定：无轨迹 / 断联超时 / 轨迹完成 → 位置锁存刹车 ======
     double dt_since_ego =
-        last_ego_msg_time_.isZero()
-            ? 0.0
-            : (now - last_ego_msg_time_).toSec();
-    bool traj_timeout = (ego_cmd_received_ && dt_since_ego > zplus_traj_timeout_);
-
-    if (!ego_cmd_received_ || traj_timeout)
+        last_ego_msg_time_.isZero() ? 0.0 : (now - last_ego_msg_time_).toSec();
+    bool traj_timeout = (ego_cmd_received_ && dt_since_ego > ego_traj_timeout_);
+    bool traj_completed = ego_cmd_received_ &&
+        (ego_cmd_.trajectory_flag == quadrotor_msgs::PositionCommand::TRAJECTORY_STATUS_COMPLETED);
+    if (!ego_cmd_received_ || traj_timeout || traj_completed)
     {
         if (traj_timeout)
             ROS_WARN_THROTTLE(1.0,
-                "[Zplus] Traj timeout! dt=%.2fs > %.2fs → HOVER",
-                dt_since_ego, zplus_traj_timeout_);
+                "[Ego] Traj timeout! dt=%.2fs > %.2fs → HOLD(pos-hold)",
+                dt_since_ego, ego_traj_timeout_);
 
-        // type_mask 同样对齐 ruikang setpoint_raw_local_velxy_posz（对应 ruikang PLANNING
-        // 分支 dt > traj_timeout_ 时的超时悬停逻辑）
-        target_position.header.stamp = now;
-        target_position.coordinate_frame =
-            mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
-        target_position.type_mask =
-            mavros_msgs::PositionTarget::IGNORE_PX |
-            mavros_msgs::PositionTarget::IGNORE_PY |
-            mavros_msgs::PositionTarget::IGNORE_AFX |
-            mavros_msgs::PositionTarget::IGNORE_AFY |
-            mavros_msgs::PositionTarget::IGNORE_AFZ |
-            mavros_msgs::PositionTarget::FORCE |
-            mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
-        // 悬停零速度经斜率限制：进入/退出都是斜坡而非阶跃
-        double vx_cmd = 0.0, vy_cmd = 0.0, vz_dmy = 0.0;
-        slewLimitVel(vx_cmd, vy_cmd, vz_dmy,
-                     last_zplus_vx_, last_zplus_vy_, vz_dmy, dt, zplus_max_accel_);
-        target_position.velocity.x = vx_cmd;
-        target_position.velocity.y = vy_cmd;
-        target_position.position.z = z;
-        target_position.yaw = 0.0f;
-        return false;
-    }
-
-    // ====== 位置误差 & 速度误差 ======
-    // 始终跟踪 B 样条，不因 debounce 状态改变参考（与 ruikang 一致）
-    double err_x = ego_cmd_.position.x - current_position.x;
-    double err_y = ego_cmd_.position.y - current_position.y;
-    double vel_err_x = ego_cmd_.velocity.x - current_velocity.x;
-    double vel_err_y = ego_cmd_.velocity.y - current_velocity.y;
-
-    // ====== 无条件积分（固定步长0.02，与 ruikang 的 error_integral_x_ += err_x * 0.02 完全一致）======
-    integral_zpx_ += err_x * 0.02;
-    integral_zpy_ += err_y * 0.02;
-    integral_zpx_ = std::max(-(double)zplus_max_integral_, std::min(integral_zpx_, (double)zplus_max_integral_));
-    integral_zpy_ = std::max(-(double)zplus_max_integral_, std::min(integral_zpy_, (double)zplus_max_integral_));
-
-    // ====== 速度指令 = v_ref + Kp*err_p + Kv*err_v + Ki*∫err_p ======
-    double vx_cmd = ego_cmd_.velocity.x
-                  + zplus_kp_outer_ * err_x
-                  + zplus_kv_outer_ * vel_err_x
-                  + zplus_ki_outer_ * integral_zpx_;
-
-    double vy_cmd = ego_cmd_.velocity.y
-                  + zplus_kp_outer_ * err_y
-                  + zplus_kv_outer_ * vel_err_y
-                  + zplus_ki_outer_ * integral_zpy_;
-
-    // ====== 速度幅值限幅 ======
-    double speed = std::sqrt(vx_cmd * vx_cmd + vy_cmd * vy_cmd);
-    if (speed > zplus_max_vel_)
-    {
-        double scale = zplus_max_vel_ / speed;
-        vx_cmd *= scale;
-        vy_cmd *= scale;
-    }
-
-    // ====== 帧间加速度斜率限制（条件化，与 navigationSuper 一致）======
-    // 仅在新目标/换点后的短暂窗口(zplus_slew_timer_)内限幅，正常跟踪旁路——
-    // 持续限幅会与 kv 阻尼竞争，在到点附近制造慢摆(极限环)
-    if (zplus_slew_timer_ > 0.0f)
-    {
-        zplus_slew_timer_ -= dt;
-        double vz_dmy2 = 0.0;
-        slewLimitVel(vx_cmd, vy_cmd, vz_dmy2,
-                     last_zplus_vx_, last_zplus_vy_, vz_dmy2, dt, zplus_max_accel_);
-    }
-    else
-    {
-        last_zplus_vx_ = vx_cmd;
-        last_zplus_vy_ = vy_cmd;
-    }
-
-    // ====== 构建 MAVROS 消息 ======
-    // type_mask 与 ruikang.cpp 的 FlightControl::setpoint_raw_local_velxy_posz 逐位对齐：
-    // IGNORE_PX+IGNORE_PY+IGNORE_AFX+IGNORE_AFY+IGNORE_AFZ+FORCE+IGNORE_YAW_RATE
-    // （之前这里少了 FORCE、少了 IGNORE_AFX/AFY，还多了一个 ruikang 没有的 IGNORE_VZ）
-    target_position.header.stamp = now;
-    target_position.coordinate_frame =
-        mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
-    target_position.type_mask =
-        mavros_msgs::PositionTarget::IGNORE_PX |
-        mavros_msgs::PositionTarget::IGNORE_PY |
-        mavros_msgs::PositionTarget::IGNORE_AFX |
-        mavros_msgs::PositionTarget::IGNORE_AFY |
-        mavros_msgs::PositionTarget::IGNORE_AFZ |
-        mavros_msgs::PositionTarget::FORCE |
-        mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
-
-    target_position.velocity.x = vx_cmd;
-    target_position.velocity.y = vy_cmd;
-    target_position.position.z = z;
-    target_position.yaw = 0.0f;
-
-    // ====== 调试输出 ======
-    ROS_INFO_THROTTLE(0.3,
-        "[Zplus] err_p=(%.3f,%.3f) err_v=(%.3f,%.3f) int=(%.2f,%.2f) "
-        "vref=(%.2f,%.2f) vcmd=(%.2f,%.2f) dist=%.2f deb=%s",
-        err_x, err_y, vel_err_x, vel_err_y,
-        integral_zpx_, integral_zpy_,
-        ego_cmd_.velocity.x, ego_cmd_.velocity.y, vx_cmd, vy_cmd,
-        tolerance(x, y, z),
-        zplus_tol_timing_ ? "ON" : "off");
-
-    // ====== 到达判定（纯位置 Debounce，与 ruikang 完全一致）======
-    // 被动观察，不改变控制器行为 — 始终跟踪 B 样条
-    float dist = tolerance(x, y, z);
-    const float kDebounceTime = 0.15f;  // 对齐 ruikang 的 kPosTolDebounce = 0.15
-
-    if (dist < tol)
-    {
-        if (!zplus_tol_timing_)
+        if (!ego_hold_active_)
         {
-            zplus_tol_timing_ = true;
-            zplus_tol_entry_time_ = now;
-            ROS_INFO("[Zplus] 进入容差 dist=%.2f<%.2f, debounce %.2fs...",
-                     dist, tol, kDebounceTime);
+            ego_hold_active_ = true;
+            ego_hold_px_ = current_position.x;
+            ego_hold_py_ = current_position.y;
         }
-        else if ((now - zplus_tol_entry_time_).toSec() > kDebounceTime)
-        {
-            // Debounce 完成 → 直接判定到达（对应 ruikang 对普通航点的处理：
-            // handleWaypointReached() 切到 HOVER_HIGH 后，下一个周期 !waypoints.empty()
-            // 就立刻 publish_waypoint() 发下一个目标，中间没有固定悬停等待）。
-            // 不再进入 0.5s 的强制悬停阶段，避免连续调用时每个航点都"顿一下"。
-            ROS_INFO("[Zplus] Debounce 完成, 到达！");
-            zplus_tol_timing_ = false;
-            goal_sent_ = false;
-            integral_zpx_ = 0.0;
-            integral_zpy_ = 0.0;
-            // 到达帧显式给零速度（经斜率限制）：不把残余速度指令带进下一个 case
-            double zx = 0.0, zy = 0.0, zz = 0.0;
-            slewLimitVel(zx, zy, zz, last_zplus_vx_, last_zplus_vy_, zz, dt, zplus_max_accel_);
-            target_position.velocity.x = zx;
-            target_position.velocity.y = zy;
-            return true;
-        }
-    }
-    else
-    {
-        zplus_tol_timing_ = false;
-    }
-    return false;
-}
-
-// ============================================================================
-// 以下接口 2026-08 自 sim_work/api_3d.cpp 移植（命名已按要求调整），函数体保持原样
-// ============================================================================
-
-// 速度指令帧间斜率限制：|Δv| ≤ max_acc·dt，last 随调用更新。
-// 换 case / 新轨迹切入 / 超时进出时，指令速度变化全部变为斜坡，消除机身"抽一下"。
-void ASNAV::slewLimitVel(double& vx, double& vy, double& vz,
-                         double& lx, double& ly, double& lz, double dt, float max_acc)
-{
-    if (max_acc > 0.0f)
-    {
-        double dv = static_cast<double>(max_acc) * static_cast<double>(dt);
-        vx = std::clamp(vx, lx - dv, lx + dv);
-        vy = std::clamp(vy, ly - dv, ly + dv);
-        vz = std::clamp(vz, lz - dv, lz + dv);
-    }
-    lx = vx;
-    ly = vy;
-    lz = vz;
-}
-
-// 纯跟随 ego 轨迹（点击飞行模式）：不发自己的目标，目标来自 RViz 2D Nav Goal
-// 直接给 ego_planner_node，本函数只负责把 /drone_0_planning/pos_cmd 转成 PX4 setpoint。
-// 与 navigationEgo 的区别：不发布 /move_base_simple/goal；z 跟随 ego 轨迹而非写死；
-// 永不判定"到达"，持续跟随，直到 ego 停止发轨迹（到达目标后 FSM 回 WAIT_TARGET）→ 超时悬停。
-bool ASNAV::navigationEgoRviz()
-{
-    ros::Time now = ros::Time::now();
-
-    // ====== 计算实际 dt（同 navigationSuper）======
-    float dt = last_ego_rviz_call_time_.isZero()
-                   ? 0.01f
-                   : (now - last_ego_rviz_call_time_).toSec();
-    dt = std::clamp(dt, 0.005f, 0.1f);
-    last_ego_rviz_call_time_ = now;
-
-    // ====== 轨迹超时保护：ego 断联 → 悬停 ======
-    double dt_since_ego =
-        last_ego_msg_time_.isZero()
-            ? 0.0
-            : (now - last_ego_msg_time_).toSec();
-    bool traj_timeout = (ego_cmd_received_ && dt_since_ego > zplus_traj_timeout_);
-
-    if (!ego_cmd_received_ || traj_timeout)
-    {
-        if (traj_timeout)
-            ROS_WARN_THROTTLE(1.0,
-                "[EgoRviz] Traj timeout! dt=%.2fs > %.2fs → HOVER",
-                dt_since_ego, zplus_traj_timeout_);
-
-        target_position.header.stamp = now;
-        target_position.coordinate_frame =
-            mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
-        target_position.type_mask =
-            mavros_msgs::PositionTarget::IGNORE_PX |
-            mavros_msgs::PositionTarget::IGNORE_PY |
-            mavros_msgs::PositionTarget::IGNORE_AFX |
-            mavros_msgs::PositionTarget::IGNORE_AFY |
-            mavros_msgs::PositionTarget::IGNORE_AFZ |
-            mavros_msgs::PositionTarget::FORCE |
-            mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
-        // 悬停零速度经斜率限制：进入/退出都是斜坡而非阶跃
-        double vx_cmd = 0.0, vy_cmd = 0.0, vz_dmy = 0.0;
-        slewLimitVel(vx_cmd, vy_cmd, vz_dmy,
-                     last_ego_vx_, last_ego_vy_, vz_dmy, dt, zplus_max_accel_);
-        target_position.velocity.x = vx_cmd;
-        target_position.velocity.y = vy_cmd;
-        target_position.position.z = ego_cmd_received_ ? ego_cmd_.position.z : current_position.z;
-        target_position.yaw = 0.0f;
-        return false;
-    }
-
-    // ====== 位置误差 & 速度误差（跟踪 ego B 样条参考） ======
-    double err_x = ego_cmd_.position.x - current_position.x;
-    double err_y = ego_cmd_.position.y - current_position.y;
-    double vel_err_x = ego_cmd_.velocity.x - current_velocity.x;
-    double vel_err_y = ego_cmd_.velocity.y - current_velocity.y;
-
-    // ====== 新轨迹检测：ego replan 后 trajectory_id 变化 → 清积分 + 退出位置保持 ======
-    if (ego_cmd_.trajectory_id != zplus_last_traj_id_)
-    {
-        zplus_last_traj_id_ = ego_cmd_.trajectory_id;
-        integral_zpx_ = 0.0;
-        integral_zpy_ = 0.0;
-        ego_pos_hold_ = false;
-        ego_pos_hold_frames_ = 0;
-        // 斜率限制以当前实际速度为种子：新轨迹切入瞬间指令速度与实际速度连续
-        last_ego_vx_ = current_velocity.x;
-        last_ego_vy_ = current_velocity.y;
-        ego_slew_timer_ = 0.3f;      // 新轨迹后短暂限幅窗口，消除换点抽动
-    }
-
-    // ====== 无条件积分（固定步长 0.02，与 navigationEgo 一致）======
-    integral_zpx_ += err_x * 0.02;
-    integral_zpy_ += err_y * 0.02;
-    integral_zpx_ = std::max(-(double)zplus_max_integral_, std::min(integral_zpx_, (double)zplus_max_integral_));
-    integral_zpy_ = std::max(-(double)zplus_max_integral_, std::min(integral_zpy_, (double)zplus_max_integral_));
-
-    // ====== 速度指令 = v_ref + Kp*err_p + Kv*err_v + Ki*∫err_p ======
-    double vx_cmd = ego_cmd_.velocity.x
-                  + zplus_kp_outer_ * err_x
-                  + zplus_kv_outer_ * vel_err_x
-                  + zplus_ki_outer_ * integral_zpx_;
-
-    double vy_cmd = ego_cmd_.velocity.y
-                  + zplus_kp_outer_ * err_y
-                  + zplus_kv_outer_ * vel_err_y
-                  + zplus_ki_outer_ * integral_zpy_;
-
-    // ====== 速度幅值限幅 ======
-    double speed = std::sqrt(vx_cmd * vx_cmd + vy_cmd * vy_cmd);
-    if (speed > zplus_max_vel_)
-    {
-        double scale = zplus_max_vel_ / speed;
-        vx_cmd *= scale;
-        vy_cmd *= scale;
-    }
-
-    // ====== 帧间加速度斜率限制（条件化，与 navigationSuper 一致）======
-    // 仅在新轨迹切入后的短暂窗口(ego_slew_timer_)内限幅，正常跟踪旁路——
-    // 持续限幅会与 kv 阻尼竞争，在到点附近制造慢摆(极限环)
-    if (ego_slew_timer_ > 0.0f)
-    {
-        ego_slew_timer_ -= dt;
-        double vz_dmy2 = 0.0;
-        slewLimitVel(vx_cmd, vy_cmd, vz_dmy2,
-                     last_ego_vx_, last_ego_vy_, vz_dmy2, dt, zplus_max_accel_);
-    }
-    else
-    {
-        last_ego_vx_ = vx_cmd;
-        last_ego_vy_ = vy_cmd;
-    }
-
-    // ====== 到点位置保持（zfix-smooth: 仿 ruikang HOVER）======
-    // EGO 轨迹末端参考静止+距离近 → 切位置模式, 把最后收敛交给 PX4 位置环,
-    // 消除速度模式下外环积分+滞后的慢摆; 新轨迹到达(trajectory_id 变化)自动退出
-    {
-        double ref_spd = std::sqrt(ego_cmd_.velocity.x * ego_cmd_.velocity.x +
-                                   ego_cmd_.velocity.y * ego_cmd_.velocity.y);
-        double dist_ref = std::sqrt(err_x * err_x + err_y * err_y);
-        if (ref_spd < 0.05 && dist_ref < 0.3)
-        {
-            if (ego_pos_hold_frames_ < 100) ego_pos_hold_frames_++;
-            if (ego_pos_hold_frames_ > 10) ego_pos_hold_ = true;   // 10帧防抖(~0.2s@50Hz)
-        }
-        else
-        {
-            ego_pos_hold_frames_ = 0;
-            ego_pos_hold_ = false;
-        }
-    }
-    if (ego_pos_hold_)
-    {
         target_position.header.stamp = now;
         target_position.coordinate_frame =
             mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
@@ -756,15 +458,57 @@ bool ASNAV::navigationEgoRviz()
             mavros_msgs::PositionTarget::IGNORE_AFZ |
             mavros_msgs::PositionTarget::FORCE |
             mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
-        target_position.position.x = ego_cmd_.position.x;
-        target_position.position.y = ego_cmd_.position.y;
-        target_position.position.z = ego_cmd_.position.z;
-        target_position.velocity.x = 0;
-        target_position.velocity.y = 0;
+        target_position.position.x = ego_hold_px_;
+        target_position.position.y = ego_hold_py_;
+        // Z 跟规划器时：锁存最后一条轨迹的高度（从未收到则保持当前高度）；
+        // Z 锁定时：用调用方传入的 z。本分支 type_mask 走位置控制，z 必须给位置量。
+        target_position.position.z = use_z
+            ? (ego_cmd_received_ ? ego_cmd_.position.z : current_position.z)
+            : z;
+        target_position.velocity.x = 0.0;
+        target_position.velocity.y = 0.0;
+        target_position.yaw = use_yaw ? 0.0f : yaw_cmd;
         return false;
     }
 
-    // ====== 构建 MAVROS 消息（与 navigationEgo 对齐）======
+    // 有新鲜轨迹 → 复位锁存
+    ego_hold_active_ = false;
+
+    // ====== (C) PD + 参考速度前馈（XYZ 统一为速度控制量） ======
+    double ex = ego_cmd_.position.x - current_position.x;
+    double ey = ego_cmd_.position.y - current_position.y;
+    double dvx = ego_cmd_.velocity.x - current_velocity.x;
+    double dvy = ego_cmd_.velocity.y - current_velocity.y;
+
+    // Z 目标：跟规划器时用轨迹高度，锁定时用调用方传入的 z（与输出侧 use_z 统一）
+    double z_ref = use_z ? ego_cmd_.position.z : z;
+    double ez = z_ref - current_position.z;
+    double dvz = ego_cmd_.velocity.z - current_velocity.z;
+
+    // 无条件积分（固定步长 0.02）
+    integral_egox_ += ex * 0.02;
+    integral_egoy_ += ey * 0.02;
+    integral_egoz_ += ez * 0.02;
+    integral_egox_ = std::max(-(double)ego_max_integral_, std::min(integral_egox_, (double)ego_max_integral_));
+    integral_egoy_ = std::max(-(double)ego_max_integral_, std::min(integral_egoy_, (double)ego_max_integral_));
+    integral_egoz_ = std::max(-(double)ego_max_integral_, std::min(integral_egoz_, (double)ego_max_integral_));
+
+    double vx_cmd = ego_kp_outer_ * ex + ego_kv_outer_ * dvx + ego_ki_outer_ * integral_egox_ + ego_ff_gain_ * ego_cmd_.velocity.x;
+    double vy_cmd = ego_kp_outer_ * ey + ego_kv_outer_ * dvy + ego_ki_outer_ * integral_egoy_ + ego_ff_gain_ * ego_cmd_.velocity.y;
+    double vz_cmd = ego_kp_outer_ * ez + ego_kv_outer_ * dvz + ego_ki_outer_ * integral_egoz_ + ego_ff_gain_z_ * ego_cmd_.velocity.z;
+
+    // XY 速度幅值限幅
+    double speed = std::hypot(vx_cmd, vy_cmd);
+    if (speed > ego_max_vel_)
+    {
+        double scale = ego_max_vel_ / speed;
+        vx_cmd *= scale;
+        vy_cmd *= scale;
+    }
+    // Z 速度独立限幅
+    vz_cmd = std::max(-(double)ego_max_vel_z_, std::min(vz_cmd, (double)ego_max_vel_z_));
+
+    // 构建消息：XY 速度 + Z（速度/位置由 nav_mode 决定）+ yaw
     target_position.header.stamp = now;
     target_position.coordinate_frame =
         mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
@@ -777,40 +521,128 @@ bool ASNAV::navigationEgoRviz()
         mavros_msgs::PositionTarget::FORCE |
         mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
 
+    if (use_z)
+        target_position.type_mask |= mavros_msgs::PositionTarget::IGNORE_PZ;
+
     target_position.velocity.x = vx_cmd;
     target_position.velocity.y = vy_cmd;
-    target_position.position.z = ego_cmd_.position.z;  // 3D 跟随：高度随 ego 轨迹
-    target_position.yaw = ego_cmd_.yaw;
+    if (use_z)
+        target_position.velocity.z = vz_cmd;   // Z 跟规划器：速度控制
+    else
+        target_position.position.z = z;        // Z 锁定：PX4 位置控制，用形参高度
+    target_position.yaw = use_yaw ? ego_cmd_.yaw : yaw_cmd;
 
-    // ====== 调试输出 ======
-    ROS_INFO_THROTTLE(0.3,
-        "[EgoRviz] err_p=(%.3f,%.3f) err_v=(%.3f,%.3f) "
-        "vref=(%.2f,%.2f) vcmd=(%.2f,%.2f) z=%.2f",
-        err_x, err_y, vel_err_x, vel_err_y,
-        ego_cmd_.velocity.x, ego_cmd_.velocity.y, vx_cmd, vy_cmd,
-        ego_cmd_.position.z);
+    // rviz 调参模式：永不到达
+    if (ego_rviz_mode_)
+        return false;
 
-    return false;  // 持续跟随，永不判定"到达"
+    // ====== (D) 到达判定：2D 距离 + debounce（无速度闸） ======
+    float dist = std::hypot(x - current_position.x, y - current_position.y);
+    if (dist < tol)
+    {
+        if (!ego_tol_timing_)
+        {
+            ego_tol_timing_ = true;
+            ego_tol_entry_time_ = now;
+            ROS_INFO("[Ego] 进入容差 dist=%.2f<%.2f, debounce %.2fs...", dist, tol, kDebounce);
+        }
+        else if ((now - ego_tol_entry_time_).toSec() > kDebounce)
+        {
+            if (!stop_at_goal)
+            {
+                // 中间点：到达即完成，下一 case 立刻发下一目标（动着换点）
+                ROS_INFO("[Ego] 到达（中间点）");
+                ego_tol_timing_ = false;
+                goal_sent_ = false;
+                integral_egox_ = 0.0;
+                integral_egoy_ = 0.0;
+                integral_egoz_ = 0.0;
+                return true;
+            }
+            // 末点：位置锁存收敛（HOVER_HIGH），v<0.3 才完成
+            if (!ego_hold_active_)
+            {
+                ego_hold_active_ = true;
+                ego_hold_px_ = current_position.x;
+                ego_hold_py_ = current_position.y;
+            }
+            target_position.header.stamp = now;
+            target_position.coordinate_frame =
+                mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
+            target_position.type_mask =
+                mavros_msgs::PositionTarget::IGNORE_VX |
+                mavros_msgs::PositionTarget::IGNORE_VY |
+                mavros_msgs::PositionTarget::IGNORE_VZ |
+                mavros_msgs::PositionTarget::IGNORE_AFX |
+                mavros_msgs::PositionTarget::IGNORE_AFY |
+                mavros_msgs::PositionTarget::IGNORE_AFZ |
+                mavros_msgs::PositionTarget::FORCE |
+                mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
+            target_position.position.x = ego_hold_px_;
+            target_position.position.y = ego_hold_py_;
+            target_position.position.z = use_z
+                ? (ego_cmd_received_ ? ego_cmd_.position.z : current_position.z)
+                : z;
+            target_position.velocity.x = 0.0;
+            target_position.velocity.y = 0.0;
+            target_position.yaw = use_yaw ? 0.0f : yaw_cmd;
+            if (std::hypot(current_velocity.x, current_velocity.y) < kStopVel)
+            {
+                ROS_INFO("[Ego] 到达（末点，位置锁存收敛）");
+                ego_tol_timing_ = false;
+                goal_sent_ = false;
+                ego_hold_active_ = false;
+                integral_egox_ = 0.0;
+                integral_egoy_ = 0.0;
+                integral_egoz_ = 0.0;
+                return true;
+            }
+        }
+    }
+    else
+    {
+        ego_tol_timing_ = false;
+    }
+    return false;
 }
-
-
-// ====== navigationSuper: SUPER 规划器接口（仿 Zplus 控制器） ======
-// 调用方式：在主循环中每帧调用 navigationSuper(goal_x, goal_y, goal_z, goal_yaw, tol)
-// 返回 true 表示已到达目标点（debounce 完成）
-// ====== navigationSuper: SUPER 规划器接口（重写 2026-08-25，对齐 ruikang 控制器） ======
-// ruikang.cpp (PX4RosNavEgoPD::FlyCmdLooper PLANNING) 是验证过"贴 ego 轨迹 + 换点丝滑"的
-// 控制器。本接口重写为同结构：
-//   - 无 fresh_cmd：换点后旧轨迹尾巴继续跟（超时兜底），新轨迹到达无缝切换（动着换点）
-//   - 无 acc_ff：PD + 参考速度前馈（同 ruikang）
-//   - 无 slew 窗口 / 无 yaw 收尾 / 无到点位置保持（均非 ruikang 结构）
-//   - 超时兜底保留 holdfix 位置锁存（防零速漂移，run30 实测 0.4m）
-//   - 到达：2D 距离 + 0.15s debounce（同 ruikang），无速度闸
-//   - stop_at_goal=true：到达后位置锁存收敛（= ruikang HOVER_HIGH），v<0.3 才 return true（末点用）
-bool ASNAV::navigationSuper(float x, float y, float z, float yaw, float tol, bool stop_at_goal)
+// 纯跟随 ego 轨迹（点击飞行模式）：不发自己的目标，目标来自 RViz 2D Nav Goal
+bool ASNAV::navigationEgoRviz(int nav_mode)
 {
-    (void)yaw;   // yaw 固定 0（用户决定），参数保留兼容
+    ROS_INFO("[EgoRviz] 只接收 rviz 打点，跟踪 EGO 轨迹（navigationEgo 控制律）...");
+    ros::Rate rate(50.0);
+
+    ego_rviz_mode_ = true;
+    ego_cmd_received_ = false;   // 重新等一个 rviz 点触发的轨迹
+    integral_egox_ = 0.0;
+    integral_egoy_ = 0.0;
+    integral_egoz_ = 0.0;
+    ego_hold_active_ = false;
+
+    while (ros::ok())
+    {
+        // rviz 模式下 x/y 参数被忽略（不发 goal、不判到达）；
+        // z/yaw 作为「锁定值」传入：nav_mode 开放对应轴时它们不被使用
+        navigationEgo(0.0f, 0.0f, fly_height, 0.0f, 0.2f, false, nav_mode);
+        setpointPublish();
+        ros::spinOnce();
+        rate.sleep();
+    }
+
+    ego_rviz_mode_ = false;
+    return false;   // 永不返回 true
+}
+// ====== navigationSuper: SUPER 规划器接口
+bool ASNAV::navigationSuper(float x, float y, float z, float yaw, float tol, bool stop_at_goal, int nav_mode)
+{
+    // ====== 轴策略解析（2026-10-05）======
+    // nav_mode < 0 → 用 launch 全局默认；navigationSuperRviz 会传入 fly_height / 0.0f 作为锁定值
+    const int m = (nav_mode < 0) ? nav_default_mode_ : nav_mode;
+    const bool use_z   = (m == NAV_FULL || m == NAV_Z_ONLY);
+    const bool use_yaw = (m == NAV_FULL || m == NAV_YAW_ONLY);
+    const float yaw_cmd = std::isnan(yaw) ? 0.0f : yaw;   // 形参保护：NAN → 0
+
     ros::Time now = ros::Time::now();
-    const float kDebounce = 0.15f;    // 到达防抖（对齐 ruikang）
+    const float kDebounce = 0.15f;    // 到达防抖
     const double kStopVel = 0.3;      // 末点锁存收敛速度
 
     // ====== (A) 新目标检测：发布 goal 到 SUPER ======
@@ -827,18 +659,74 @@ bool ASNAV::navigationSuper(float x, float y, float z, float yaw, float tol, boo
         super_goal_pub_.publish(goal);
 
         super_goal_sent_ = true;
-        super_goal_time_ = now;
-        last_super_msg_time_ = now;   // 刷新超时：换点空窗不进超时刹车（对齐 ruikang publish_waypoint）
+        last_super_msg_time_ = now;   // 刷新超时：换点空窗不进超时刹车
         integral_spx_ = 0.0;
         integral_spy_ = 0.0;
         integral_spz_ = 0.0;
         super_tol_timing_ = false;
         super_hold_active_ = false;   // 新目标退出锁存
+        super_yaw_finishing_ = false; // 新目标退出 yaw 收尾
         ROS_INFO("[Super] 新目标 (%.2f, %.2f, %.2f) → 已发布到 /move_base_simple/goal", x, y, z);
     }
 
+    // ====== (A2) yaw 收尾（2026-10-05 恢复）======
+    // 仅在 use_yaw（nav_mode 开放机头朝向）时启用：位置容差满足后本接口本可直接返回
+    // true，但 SUPER 自身还在把机头转向目标 yaw；若立刻进入下一任务，yaw 指令会被打断。
+    // 故先发零速 + 目标 yaw，等 yaw 转入容差（防抖）后再返回 true。
+    if (super_yaw_finishing_)
+    {
+        float yaw_err = std::fabs(normalize_angle(yaw_cmd - current_yaw));
+
+        target_position.header.stamp = now;
+        target_position.coordinate_frame =
+            mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
+        target_position.type_mask =
+            mavros_msgs::PositionTarget::IGNORE_PX |
+            mavros_msgs::PositionTarget::IGNORE_PY |
+            mavros_msgs::PositionTarget::IGNORE_VZ |
+            mavros_msgs::PositionTarget::IGNORE_AFX |
+            mavros_msgs::PositionTarget::IGNORE_AFY |
+            mavros_msgs::PositionTarget::IGNORE_AFZ |
+            mavros_msgs::PositionTarget::FORCE |
+            mavros_msgs::PositionTarget::IGNORE_YAW_RATE;   // yaw 有效
+        target_position.velocity.x = 0;
+        target_position.velocity.y = 0;
+        target_position.position.z = use_z
+            ? (super_cmd_received_ ? super_cmd_.position.z : current_position.z)
+            : z;
+        target_position.velocity.z = 0;
+        target_position.yaw = yaw_cmd;
+
+        const float kYawTol = 0.15f;      // yaw 到位阈值 (rad ≈ 8.6°)
+        const float kYawDebounce = 0.3f;  // yaw 到位防抖
+        if (yaw_err < kYawTol)
+        {
+            if (!super_yaw_timing_)
+            {
+                super_yaw_timing_ = true;
+                super_yaw_entry_time_ = now;
+            }
+            else if ((now - super_yaw_entry_time_).toSec() > kYawDebounce)
+            {
+                ROS_INFO("[Super] yaw 收尾完成 err=%.3f rad → 到达!", yaw_err);
+                super_yaw_finishing_ = false;
+                super_yaw_timing_ = false;
+                super_goal_sent_ = false;
+                integral_spx_ = 0.0;
+                integral_spy_ = 0.0;
+                integral_spz_ = 0.0;
+                return true;
+            }
+        }
+        else
+        {
+            super_yaw_timing_ = false;
+        }
+        return false;
+    }
+
     // ====== (B) 轨迹有效判定：无轨迹 / 断联超时 / 轨迹完成 → 位置锁存刹车 ======
-    // ruikang 同位置是"零速悬停"；这里保留 holdfix 位置锁存（PX4 位置环），
+    // 无轨迹时本可零速悬停；这里保留 holdfix 位置锁存（PX4 位置环），
     // 防零速不锁位的漂移（run30 实测 v_cmd=0 空窗漂 0.4m+）。
     double dt_since_super =
         last_super_msg_time_.isZero() ? 0.0 : (now - last_super_msg_time_).toSec();
@@ -872,14 +760,14 @@ bool ASNAV::navigationSuper(float x, float y, float z, float yaw, float tol, boo
             mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
         target_position.position.x = super_hold_px_;
         target_position.position.y = super_hold_py_;
-        // rviz 模式下 z 跟随轨迹高度（navigationSuperRviz 传的 z 是 0，直接下发会把飞机压向 odom 原点）；
-        // 从未收到轨迹时保持当前高度。非 rviz 模式仍用调用方传入的 z。
-        target_position.position.z = super_rviz_mode_
+        // Z 跟规划器时：锁存最后一条轨迹的高度（从未收到则保持当前高度，避免被压向原点）；
+        // Z 锁定时：用调用方传入的 z。本分支 type_mask 走位置控制，z 必须给位置量。
+        target_position.position.z = use_z
             ? (super_cmd_received_ ? super_cmd_.position.z : current_position.z)
             : z;
         target_position.velocity.x = 0.0;
         target_position.velocity.y = 0.0;
-        target_position.yaw = 0.0f;
+        target_position.yaw = use_yaw ? 0.0f : yaw_cmd;
         return false;
     }
 
@@ -895,12 +783,12 @@ bool ASNAV::navigationSuper(float x, float y, float z, float yaw, float tol, boo
     double dvx = super_cmd_.velocity.x - current_velocity.x;
     double dvy = super_cmd_.velocity.y - current_velocity.y;
 
-    // Z 目标：rviz 模式跟随轨迹高度，非 rviz 模式仍用调用方传入的 z（保持原语义）
-    double z_ref = super_rviz_mode_ ? super_cmd_.position.z : z;
+    // Z 目标：跟规划器时用轨迹高度，锁定时用调用方传入的 z（与输出侧 use_z 统一）
+    double z_ref = use_z ? super_cmd_.position.z : z;
     double ez = z_ref - current_position.z;
     double dvz = super_cmd_.velocity.z - current_velocity.z;
 
-    // 无条件积分（固定步长 0.02，对齐 ruikang）
+    // 无条件积分（固定步长 0.02）
     integral_spx_ += ex * 0.02;
     integral_spy_ += ey * 0.02;
     integral_spz_ += ez * 0.02;
@@ -908,9 +796,9 @@ bool ASNAV::navigationSuper(float x, float y, float z, float yaw, float tol, boo
     integral_spy_ = std::max(-(double)super_max_integral_, std::min(integral_spy_, (double)super_max_integral_));
     integral_spz_ = std::max(-(double)super_max_integral_, std::min(integral_spz_, (double)super_max_integral_));
 
-    double vx = super_kp_outer_ * ex + super_kv_outer_ * dvx + super_ki_outer_ * integral_spx_ + super_cmd_.velocity.x;
-    double vy = super_kp_outer_ * ey + super_kv_outer_ * dvy + super_ki_outer_ * integral_spy_ + super_cmd_.velocity.y;
-    double vz = super_kp_outer_ * ez + super_kv_outer_ * dvz + super_ki_outer_ * integral_spz_ + super_cmd_.velocity.z;
+    double vx = super_kp_outer_ * ex + super_kv_outer_ * dvx + super_ki_outer_ * integral_spx_ + super_ff_gain_ * super_cmd_.velocity.x;
+    double vy = super_kp_outer_ * ey + super_kv_outer_ * dvy + super_ki_outer_ * integral_spy_ + super_ff_gain_ * super_cmd_.velocity.y;
+    double vz = super_kp_outer_ * ez + super_kv_outer_ * dvz + super_ki_outer_ * integral_spz_ + super_ff_gain_z_ * super_cmd_.velocity.z;
 
     // XY 速度幅值限幅
     double speed = std::hypot(vx, vy);
@@ -923,29 +811,35 @@ bool ASNAV::navigationSuper(float x, float y, float z, float yaw, float tol, boo
     // Z 速度独立限幅（super_max_vel_z_ 此前只加载未使用，这里启用）
     vz = std::max(-(double)super_max_vel_z_, std::min(vz, (double)super_max_vel_z_));
 
-    // 构建消息：XYZ 全速度 + yaw（Z 不再走 PX4 位置环）
+    // 构建消息：XY 速度 + Z（速度/位置由 nav_mode 决定）+ yaw
     target_position.header.stamp = now;
     target_position.coordinate_frame =
         mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
     target_position.type_mask =
         mavros_msgs::PositionTarget::IGNORE_PX |
         mavros_msgs::PositionTarget::IGNORE_PY |
-        mavros_msgs::PositionTarget::IGNORE_PZ |
         mavros_msgs::PositionTarget::IGNORE_AFX |
         mavros_msgs::PositionTarget::IGNORE_AFY |
         mavros_msgs::PositionTarget::IGNORE_AFZ |
         mavros_msgs::PositionTarget::FORCE |
         mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
+
+    if (use_z)
+        target_position.type_mask |= mavros_msgs::PositionTarget::IGNORE_PZ;
+
     target_position.velocity.x = vx;
     target_position.velocity.y = vy;
-    target_position.velocity.z = vz;
-    target_position.yaw = 0.0f;
+    if (use_z)
+        target_position.velocity.z = vz;   // Z 跟规划器：速度控制
+    else
+        target_position.position.z = z;    // Z 锁定：PX4 位置控制，用形参高度
+    target_position.yaw = use_yaw ? super_cmd_.yaw : yaw_cmd;
 
     // rviz 调参模式：永不到达
     if (super_rviz_mode_)
         return false;
 
-    // ====== (D) 到达判定：2D 距离 + debounce（对齐 ruikang，无速度闸） ======
+    // ====== (D) 到达判定：2D 距离 + debounce（无速度闸） ======
     float dist = std::hypot(x - current_position.x, y - current_position.y);
     if (dist < tol)
     {
@@ -957,6 +851,21 @@ bool ASNAV::navigationSuper(float x, float y, float z, float yaw, float tol, boo
         }
         else if ((now - super_tol_entry_time_).toSec() > kDebounce)
         {
+            // ====== yaw 收尾入口（2026-10-05 恢复）======
+            // 启用 yaw 时：位置已到位但机头还没转到目标 yaw → 先进入收尾阶段，等 yaw 收敛
+            // 再返回 true。参考轨迹仍在移动时不进入（避免高速清零 XY 造成惯性过冲）。
+            if (use_yaw)
+            {
+                double ref_spd = std::hypot(super_cmd_.velocity.x, super_cmd_.velocity.y);
+                float yaw_err = std::fabs(normalize_angle(yaw_cmd - current_yaw));
+                if (ref_spd < 0.15 && yaw_err > 0.15f)
+                {
+                    super_yaw_finishing_ = true;
+                    super_yaw_timing_ = false;
+                    ROS_INFO("[Super] 位置到位且参考停止, yaw err=%.3f rad > 0.15 → 进入 yaw 收尾", yaw_err);
+                    return false;
+                }
+            }
             if (!stop_at_goal)
             {
                 // 中间点：到达即完成，下一 case 立刻发下一目标（动着换点）
@@ -968,7 +877,7 @@ bool ASNAV::navigationSuper(float x, float y, float z, float yaw, float tol, boo
                 integral_spz_ = 0.0;
                 return true;
             }
-            // 末点：位置锁存收敛（= ruikang HOVER_HIGH），v<0.3 才完成
+            // 末点：位置锁存收敛（HOVER_HIGH），v<0.3 才完成
             if (!super_hold_active_)
             {
                 super_hold_active_ = true;
@@ -989,10 +898,12 @@ bool ASNAV::navigationSuper(float x, float y, float z, float yaw, float tol, boo
                 mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
             target_position.position.x = super_hold_px_;
             target_position.position.y = super_hold_py_;
-            target_position.position.z = z;
+            target_position.position.z = use_z
+                ? (super_cmd_received_ ? super_cmd_.position.z : current_position.z)
+                : z;
             target_position.velocity.x = 0.0;
             target_position.velocity.y = 0.0;
-            target_position.yaw = 0.0f;
+            target_position.yaw = use_yaw ? 0.0f : yaw_cmd;
             if (std::hypot(current_velocity.x, current_velocity.y) < kStopVel)
             {
                 ROS_INFO("[Super] 到达（末点，位置锁存收敛）");
@@ -1012,13 +923,8 @@ bool ASNAV::navigationSuper(float x, float y, float z, float yaw, float tol, boo
     }
     return false;
 }
-
 // ====== navigationSuperRviz: 只接收 rviz 打点的 SUPER 测试接口（复用 navigationSuper 控制律） ======
-// 本接口完整复用 navigationSuper 的 PID 外环 + 帧间斜率限制 + 轨迹超时保护；
-// 但不传坐标、不自己发 goal，只等用户在 rviz 里打点触发 SUPER 重新规划，然后用同一套控制律跟踪。
-// 内部 while(ros::ok()) 阻塞运行，永不返回 true（只有节点退出才返回 false）。
-
-bool ASNAV::navigationSuperRviz()
+bool ASNAV::navigationSuperRviz(int nav_mode)
 {
     ROS_INFO("[SuperRviz] 只接收 rviz 打点，跟踪 SUPER 轨迹（navigationSuper 控制律）...");
     ros::Rate rate(50.0);
@@ -1028,16 +934,13 @@ bool ASNAV::navigationSuperRviz()
     integral_spx_ = 0.0;
     integral_spy_ = 0.0;
     integral_spz_ = 0.0;
-    last_super_call_time_ = ros::Time(0);
-    // 斜率限制以当前实际速度为种子，进接口瞬间指令速度连续
-    last_super_vx_ = current_velocity.x;
-    last_super_vy_ = current_velocity.y;
-    last_super_vz_ = current_velocity.z;
+    super_hold_active_ = false;
 
     while (ros::ok())
     {
-        // rviz 模式下 x/y/z/yaw/tol 参数被忽略：不发 goal、不判到达
-        navigationSuper(0.0f, 0.0f, 0.0f, NAN, 0.2f);
+        // rviz 模式下 x/y 参数被忽略（不发 goal、不判到达）；
+        // z/yaw 作为「锁定值」传入：nav_mode 开放对应轴时它们不被使用
+        navigationSuper(0.0f, 0.0f, fly_height, 0.0f, 0.2f, false, nav_mode);
         setpointPublish();
         ros::spinOnce();
         rate.sleep();
@@ -1130,20 +1033,11 @@ bool ASNAV::flyUp(float height)
 // 自动降落接口
 bool ASNAV::autoLand()
 {
-    if (!is_auto_land) 
-    {
-        ROS_WARN("自动降落功能未启用");
-        return false;
-    }
-    else
-    {
     set_mode("POSCTL");
     ros::Duration(0.5).sleep();
     set_mode("AUTO.LAND");
     ROS_INFO("已切换到AUTO.LAND模式，正在降落...");
     return true;
-    }
-    return false;
 }
 // 下视视觉跟随接口
 bool ASNAV::trackYoloDown(float max_distance, int tol)
@@ -2154,7 +2048,7 @@ void ASNAV::mavros_local_position_pose_cb(const geometry_msgs::PoseStamped::Cons
     current_yaw = static_cast<float>(yaw);
     
 }
-// MAVROS速度回调 (用于 Zplus 的 Kv 速度误差阻尼项)
+// MAVROS速度回调 (用于 Ego 的 Kv 速度误差阻尼项)
 void ASNAV::mavros_local_velocity_cb(const geometry_msgs::TwistStamped::ConstPtr& msg)
 {
     current_velocity.x = msg->twist.linear.x;
@@ -2172,15 +2066,6 @@ void ASNAV::ego_planner_pos_cmd_cb(const quadrotor_msgs::PositionCommand::ConstP
 void ASNAV::super_planner_pos_cmd_cb(const quadrotor_msgs::PositionCommand::ConstPtr& msg)
 {
     super_cmd_ = *msg;
-    // SUPER 在 "world" 坐标系下规划，如果 world 系与 MAVROS local 系不一致
-    // 可通过 super_rotate_180_ 参数控制是否需要旋转 180°（仅 XY，Z 由 MAVROS 处理）
-    if (super_rotate_180_)
-    {
-        float px = super_cmd_.position.x, py = super_cmd_.position.y;
-        super_cmd_.position.x = -px;  super_cmd_.position.y = -py;
-        float vx = super_cmd_.velocity.x, vy = super_cmd_.velocity.y;
-        super_cmd_.velocity.x = -vx;  super_cmd_.velocity.y = -vy;
-    }
     super_cmd_received_ = true;
     last_super_msg_time_ = ros::Time::now();
 }
