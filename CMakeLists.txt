@@ -71,8 +71,11 @@ include_directories(
 # add_executable(navigation_with_waypoint_node src/navigation_with_waypoint.cpp)
 add_library(asnav_api_2d src/api_2d.cpp)
 add_library(asnav_api_3d src/api_3d.cpp)
+# api_3dlk: 轮廓控制（lk=lun kuo）变体库，与 api_3d 同构
+add_library(asnav_api_3dlk src/api_3dlk.cpp)
 target_link_libraries(asnav_api_2d ${catkin_LIBRARIES})
 target_link_libraries(asnav_api_3d ${catkin_LIBRARIES})
+target_link_libraries(asnav_api_3dlk ${catkin_LIBRARIES})
 ## Specify libraries to link a library or executable target against
 # target_link_libraries(navigation_with_waypoint_node
 #   ${catkin_LIBRARIES}
